@@ -3,7 +3,7 @@
 ---
 
 # OmniMedVault — System Design Document
-**Version:** 1.8 | **Date:** 2026-05-19 | **Status:** Phase 2 Feature Addition — Natural Language Query Interface
+**Version:** 2.0 | **Date:** 2026-05-22 | **Status:** Consent Model refined — Two-Layer Consent Scope (Specialty Records + Active Medication Context)
 
 ---
 
@@ -35,6 +35,7 @@
 25. [Resolved Decisions](#25-resolved-decisions)
 26. [Family Medical Proxy — Remote Access for Trusted Family Members](#26-family-medical-proxy--remote-access-for-trusted-family-members)
 27. [Natural Language Query Interface](#27-natural-language-query-interface)
+28. [Future Scope](#28-future-scope)
 
 ---
 
@@ -886,6 +887,104 @@ This is the most critical privacy mechanism in the system.
 - **QR Code:** Doctor shows their QR code; patient scans with their app → instant consent
 - **Doctor ID:** Patient enters doctor's unique ID in app → manual verification
 - **Institution Link:** Patient checks into a hospital via the app; consents to all registered doctors at that institution for the session duration
+
+---
+
+### Consent Scope — Two-Layer Model
+
+Consent controls *duration* (above) and *scope* (what the doctor actually sees). Scope is configured via two independent layers at the time of access grant.
+
+#### Layer 1: Specialty Records (Patient-Configurable)
+
+The patient selects which category of records the authorised doctor can access:
+
+| Option | What the doctor sees | Default for |
+|---|---|---|
+| **Full History** | All records across all specialties | GPs, family doctors |
+| **Specialty-Specific** | Only records linked to the doctor's registered specialty — consultations, prescriptions, lab reports, imaging | Specialists (auto-detected from doctor's profile) |
+| **Custom** | Patient manually selects individual record categories or specific documents | Advanced / power users |
+
+When a specialist is granted access, the system defaults to Specialty-Specific scope and pre-selects the matching specialty. The patient can widen or narrow this before confirming.
+
+---
+
+#### Layer 2: Active Medication Context (ON by default — safety layer)
+
+Regardless of the Layer 1 scope selected, every authorised doctor is shown a **cross-specialty Active Medication List** — all medications the patient is currently taking, regardless of which specialist prescribed them.
+
+**Clinical rationale:**
+A specialist treating a patient for one condition who prescribes without knowledge of the patient's full medication picture risks:
+- Prescribing a drug whose active salt is already in use under a different brand name
+- Creating a dangerous drug–drug interaction (e.g., combining an anticoagulant with an NSAID prescribed by another doctor)
+- Duplicating a drug class (e.g., prescribing a second antacid when one is already active from a gastroenterologist)
+- Compounding side effects from drugs with overlapping mechanisms
+
+Example: A cardiologist treating a patient for heart complications may prescribe a diuretic or ACE inhibitor without realising the patient is already on an antihypertensive from their physician, metformin from a diabetologist, and a proton pump inhibitor from a gastroenterologist. The Active Medication Context makes this visible — immediately, automatically, without requiring the patient to remember and verbalise every drug they take.
+
+This directly addresses one of the root causes of preventable medical errors identified in the Problem Statement (§1): *"Incorrect drug prescriptions — doctor unaware of patient's existing medications."*
+
+**What the Active Medication List contains:**
+
+| Field | Source |
+|---|---|
+| Medicine name (brand + generic/salt) | OCR-extracted from prescription or doctor-entered |
+| Dose and frequency | Prescription record |
+| Prescribing doctor name and specialty | Doctor profile or OCR-extracted |
+| Prescription date | Document date |
+| Duration / ongoing flag | Prescription record; `ongoing = true` for chronic conditions |
+
+**Computation:** Derived in real time from all prescription records where `current_date ≤ prescription_date + duration_days`, or where `ongoing = true`. Updated automatically as new prescriptions are uploaded or created.
+
+**Patient override:** The patient may toggle off Layer 2 for a specific doctor. The system displays a prominent, non-dismissible safety warning before permitting this. The override decision is recorded in the audit log.
+
+---
+
+#### Consent Configuration UI Flow (at time of access grant)
+
+```
+Step 1 — Duration
+  ○ Permanent (until revoked)
+  ○ Time-limited  →  [  30  ] days
+  ○ Single session only
+
+Step 2 — What can they see?
+  ○ Full medical history
+  ● Only [Cardiology] records             ← auto-selected from doctor's specialty
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │ ✅ Also share my current medication list (Recommended)      │
+  │    Dr. Sharma will see all medicines you are taking now,    │
+  │    regardless of which doctor prescribed them.              │
+  │                                                             │
+  │    ⚠ Turning this off means the doctor will not see your   │
+  │    complete medication picture. This may affect their       │
+  │    prescription decisions and your safety.                  │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Doctor-Facing: Medication Context Display
+
+When a doctor opens an authorised patient's record and Layer 2 is active, a persistent **Medication Context card** is shown at the top of the patient view:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  💊 Currently Active Medications (5)                         │
+│  ─────────────────────────────────────────────────────────── │
+│  Metoprolol 25mg · once daily       [Dr. Patel — Cardiology] │
+│  Metformin 500mg · twice daily   [Dr. Singh — Diabetology]   │
+│  Amlodipine 5mg · once daily        [Dr. Patel — Cardiology] │
+│  Pantoprazole 40mg · once daily [Dr. Iyer — Gastroenterology]│
+│  Atorvastatin 10mg · once daily     [Dr. Patel — Cardiology] │
+│                                                              │
+│  [View full prescription history]                            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+This card is rendered before any specialty-specific records, ensuring the doctor sees the full medication picture before reviewing any notes or creating a new prescription.
+
+**Phase 2 addition (flagged, not in current scope):** When the doctor uses the in-app prescription tool (Vault Notes) to issue a new prescription, an optional drug interaction check will run the proposed medicine against the Active Medication List and flag: same active salt already prescribed; known drug–drug interaction; same pharmacological class. This positions OmniMedVault as an active clinical safety layer, not merely a record store.
 
 ---
 
@@ -2639,7 +2738,71 @@ The `records` array contains only actual data points from `health_metrics`. No e
 
 ---
 
-*End of System Design Document v1.8*
+---
+
+## 28. Future Scope
+
+> Features in this section are **not scheduled for any current phase**. They require a critical mass of real user data — estimated at approximately one year of continuous data collection from a substantial number of active users — before development can begin. Details will be refined over time.
+
+---
+
+### 28.1 Monthly Health Intelligence Journal
+
+#### Overview
+
+Once OmniMedVault accumulates sufficient anonymised, aggregated health data, the platform will generate a **Monthly Health Intelligence Journal** — an internal publication that surfaces real-world health trends observed across the user base. The journal is strictly **developer-facing**: only OmniMedVault developers can access, review, and publish each edition. No patient or doctor ever sees this journal.
+
+#### Data Trigger Condition
+
+Development of this feature should not begin until:
+- Approximately **one year** of continuous, production-grade data has been collected.
+- The active user base is large enough to produce statistically meaningful, anonymised aggregates without any risk of individual identification.
+
+#### Journal Content Categories
+
+Each monthly edition covers one or more of the following analytical dimensions:
+
+| Dimension | Description |
+|---|---|
+| **Geography × Season** | Diseases and illnesses most prevalent in a given state/region during a specific month or season (e.g., dengue spikes in Maharashtra post-monsoon, respiratory illness peaks in Delhi winters) |
+| **Age Group × Condition** | Categorisation of common conditions by age bracket (paediatric, adult, geriatric) — useful for identifying cohort-specific risk patterns |
+| **Geography × Medicine / Active Salt** | Most-prescribed drugs and active pharmaceutical ingredients (APIs/salts) in a region during a given period, broken down by season or month |
+
+Additional dimensions may be added as the data model matures.
+
+#### Access Model
+
+| Role | Access |
+|---|---|
+| Developer (OmniMedVault team) | Full read + publish rights |
+| Patient | None |
+| Doctor | None |
+| Hospital admin | None |
+
+Publication requires explicit developer review and approval before a journal edition is marked published. No automated publishing.
+
+#### Commercialisation Intent
+
+The compiled journals and the underlying anonymised dataset represent a high-value health intelligence asset. Planned monetisation channels include:
+
+- **Pharma companies** — regional demand forecasting, drug supply planning, seasonal stocking
+- **Government health bodies** — evidence base for targeted public health schemes in specific states or demographic groups
+- **Health insurance providers, NGOs, research institutions** — as additional channels identified over time
+
+This positions OmniMedVault as a **Public Health Intelligence** platform alongside its core patient-facing product, opening a B2B / B2G revenue stream separate from the existing B2C and B2B SaaS models.
+
+#### Key Design Constraints (to resolve during planning)
+
+- **Anonymisation architecture** — individual users must never be identifiable from journal content or the underlying exported dataset; differential privacy or k-anonymity techniques should be evaluated.
+- **User consent model** — patients must explicitly opt-in to their anonymised data being used for commercial intelligence purposes; this consent is separate from the core product consent.
+- **Regulatory compliance** — DPDP Act 2023 (India), and GDPR if international users are onboarded; legal review required before any data commercialisation.
+- **Minimum cohort size guardrail** — no aggregate stat should be published if it is derived from fewer than a defined minimum number of users in a cohort (prevents indirect identification).
+- **Journal format** — PDF report, internal dashboard, or structured API export; to be decided during planning.
+- **Publisher access control** — role-gated admin panel with audit log of who reviewed and published each edition.
+
+---
+
+*End of System Design Document v2.0*
 
 ---
 
