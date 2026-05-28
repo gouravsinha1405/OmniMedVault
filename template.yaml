@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: OmniMedVault India-only demo stack
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 15
+    MemorySize: 512
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        NODE_OPTIONS: --enable-source-maps
+
+Resources:
+  OmniMedVaultApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: demo
+      CorsConfiguration:
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        AllowOrigins:
+          - '*'
+
+  OmniMedVaultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./dist
+      Handler: lambda.handler
+      Description: OmniMedVault API Lambda for India-only demos
+      Events:
+        ProxyApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref OmniMedVaultApi
+            Path: /{proxy+}
+            Method: ANY
+        RootApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref OmniMedVaultApi
+            Path: /
+            Method: ANY
+
+Outputs:
+  DemoApiUrl:
+    Description: HTTP API endpoint for the OmniMedVault demo stack
+    Value: !Sub https://${OmniMedVaultApi}.execute-api.${AWS::Region}.amazonaws.com/demo/
