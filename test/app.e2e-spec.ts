@@ -230,4 +230,95 @@ describe('OmniMedVault API (e2e)', () => {
       storageKey: detailResponse.body.storageKey,
     });
   });
+
+  it('grants, lists, and revokes doctor consent', async () => {
+    const grantedConsent = await request(app.getHttpServer())
+      .post('/api/v1/consent')
+      .set('Authorization', `Bearer ${patientAccessToken}`)
+      .send({
+        doctorPhone: '+919876543210',
+        expiresAt: '2026-12-31T00:00:00.000Z',
+      })
+      .expect(201);
+
+    expect(grantedConsent.body).toMatchObject({
+      patientPhone: '+919812345678',
+      doctorPhone: '+919876543210',
+      status: 'ACTIVE',
+      expiresAt: '2026-12-31T00:00:00.000Z',
+      revokedAt: null,
+    });
+
+    const patientConsentList = await request(app.getHttpServer())
+      .get('/api/v1/consent')
+      .set('Authorization', `Bearer ${patientAccessToken}`)
+      .expect(200);
+
+    expect(patientConsentList.body).toHaveLength(1);
+    expect(patientConsentList.body[0].doctorPhone).toBe('+919876543210');
+
+    const doctorPatients = await request(app.getHttpServer())
+      .get(`/api/v1/doctors/${encodeURIComponent('+919876543210')}/patients`)
+      .set('Authorization', `Bearer ${doctorAccessToken}`)
+      .expect(200);
+
+    expect(doctorPatients.body).toHaveLength(1);
+    expect(doctorPatients.body[0]).toMatchObject({
+      patient: {
+        phone: '+919812345678',
+        name: 'Asha Verma',
+        bloodGroup: 'B+',
+        allergies: ['Penicillin'],
+        isActive: true,
+      },
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/consent/${encodeURIComponent('+919876543210')}`)
+      .set('Authorization', `Bearer ${patientAccessToken}`)
+      .expect(200);
+
+    const consentListAfterRevoke = await request(app.getHttpServer())
+      .get('/api/v1/consent')
+      .set('Authorization', `Bearer ${patientAccessToken}`)
+      .expect(200);
+
+    expect(consentListAfterRevoke.body).toEqual([]);
+
+    const doctorPatientsAfterRevoke = await request(app.getHttpServer())
+      .get(`/api/v1/doctors/${encodeURIComponent('+919876543210')}/patients`)
+      .set('Authorization', `Bearer ${doctorAccessToken}`)
+      .expect(200);
+
+    expect(doctorPatientsAfterRevoke.body).toEqual([]);
+  });
+
+  it('prevents doctors from reading another doctor\'s patient list', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/doctors/${encodeURIComponent('+919800000000')}/patients`)
+      .set('Authorization', `Bearer ${doctorAccessToken}`)
+      .expect(403);
+  });
+
+  it('returns an append-only patient audit log for prior actions', async () => {
+    const auditLogResponse = await request(app.getHttpServer())
+      .get('/api/v1/patients/me/audit-log')
+      .set('Authorization', `Bearer ${patientAccessToken}`)
+      .expect(200);
+
+    expect(auditLogResponse.body.length).toBeGreaterThanOrEqual(7);
+    expect(auditLogResponse.body[0]).toMatchObject({
+      actorId: '+919812345678',
+      actorRole: 'PATIENT',
+      patientPhone: '+919812345678',
+    });
+
+    const actions = auditLogResponse.body.map((entry: { action: string }) => entry.action);
+
+    expect(actions).toContain('VIEW');
+    expect(actions).toContain('UPDATE');
+    expect(actions).toContain('UPLOAD');
+    expect(actions).toContain('CONSENT_GRANT');
+    expect(actions).toContain('CONSENT_REVOKE');
+  });
 });

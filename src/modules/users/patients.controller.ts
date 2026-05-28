@@ -1,5 +1,7 @@
 import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
 
+import { AuditService } from '../audit/audit.service';
+import { AuditLogRecord } from '../audit/audit.types';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { DemoAuthGuard } from '../auth/demo-auth.guard';
 import { PatientRoleGuard } from '../auth/patient-role.guard';
@@ -11,11 +13,24 @@ import { UsersService } from './users.service';
 @Controller('patients')
 @UseGuards(DemoAuthGuard, PatientRoleGuard)
 export class PatientsController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly auditService: AuditService,
+  ) {}
 
   @Get('me')
   getMe(@CurrentUser() user: AuthenticatedUser): PatientProfile {
-    return this.usersService.getPatientProfile(user.phone);
+    const profile = this.usersService.getPatientProfile(user.phone);
+
+    this.auditService.recordEvent({
+      actor: user,
+      action: 'VIEW',
+      resourceType: 'PROFILE',
+      resourceId: profile.id,
+      patientPhone: user.phone,
+    });
+
+    return profile;
   }
 
   @Put('me')
@@ -23,6 +38,22 @@ export class PatientsController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() payload: UpdatePatientProfileDto,
   ): PatientProfile {
-    return this.usersService.updatePatientProfile(user.phone, payload);
+    const profile = this.usersService.updatePatientProfile(user.phone, payload);
+
+    this.auditService.recordEvent({
+      actor: user,
+      action: 'UPDATE',
+      resourceType: 'PROFILE',
+      resourceId: profile.id,
+      patientPhone: user.phone,
+    });
+
+    return profile;
+  }
+
+  @Get('me/audit-log')
+  getAuditLog(@CurrentUser() user: AuthenticatedUser): AuditLogRecord[] {
+    return this.auditService.listPatientAuditLogs(user.phone);
   }
 }
+

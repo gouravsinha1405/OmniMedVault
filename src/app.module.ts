@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { HealthController } from './health.controller';
 import { AuthModule } from './modules/auth/auth.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { ConsentModule } from './modules/consent/consent.module';
 import { DocumentsModule } from './modules/documents/documents.module';
 import { InstitutionsModule } from './modules/institutions/institutions.module';
@@ -14,6 +15,7 @@ import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
+    AuditModule,
     AuthModule,
     UsersModule,
     DocumentsModule,

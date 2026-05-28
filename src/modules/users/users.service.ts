@@ -12,6 +12,22 @@ export class UsersService {
     return this.ensurePatientProfile(phone);
   }
 
+  getPatientProfileSummary(phone: string): Pick<
+    PatientProfile,
+    'id' | 'phone' | 'name' | 'bloodGroup' | 'allergies' | 'isActive'
+  > {
+    const profile = this.ensurePatientProfile(phone);
+
+    return {
+      id: profile.id,
+      phone: profile.phone,
+      name: profile.name,
+      bloodGroup: profile.bloodGroup,
+      allergies: profile.allergies,
+      isActive: profile.isActive,
+    };
+  }
+
   updatePatientProfile(
     phone: string,
     payload: UpdatePatientProfileDto,

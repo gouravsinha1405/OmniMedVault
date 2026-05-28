@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OmniMedVault Demo Console</title>
+    <style>
+      :root {
+        --bg: #f3efe4;
+        --panel: rgba(255, 252, 245, 0.92);
+        --ink: #1f2a2a;
+        --muted: #5a6b68;
+        --line: rgba(31, 42, 42, 0.12);
+        --accent: #156f6a;
+        --accent-strong: #0f4f4b;
+        --warm: #d97a31;
+        --ok: #2a7a46;
+        --shadow: 0 20px 60px rgba(25, 39, 39, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(217, 122, 49, 0.18), transparent 26%),
+          radial-gradient(circle at top right, rgba(21, 111, 106, 0.16), transparent 24%),
+          linear-gradient(180deg, #f8f5ee 0%, var(--bg) 100%);
+      }
+
+      .shell {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.3fr 0.7fr;
+        gap: 18px;
+        margin-bottom: 20px;
+      }
+
+      .hero-card,
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .hero-card {
+        padding: 26px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .eyebrow {
+        display: inline-block;
+        margin-bottom: 12px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(21, 111, 106, 0.1);
+        color: var(--accent-strong);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .hero-card h1 {
+        font-size: clamp(32px, 4vw, 52px);
+        line-height: 0.95;
+        max-width: 10ch;
+        margin-bottom: 14px;
+      }
+
+      .hero-card p {
+        max-width: 62ch;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .hero-metrics {
+        display: grid;
+        gap: 14px;
+      }
+
+      .metric {
+        padding: 20px;
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 28px;
+        margin-bottom: 6px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .panel {
+        padding: 20px;
+      }
+
+      .panel h2 {
+        font-size: 18px;
+        margin-bottom: 6px;
+      }
+
+      .panel p.note {
+        color: var(--muted);
+        font-size: 14px;
+        margin-bottom: 18px;
+      }
+
+      .span-4 { grid-column: span 4; }
+      .span-5 { grid-column: span 5; }
+      .span-6 { grid-column: span 6; }
+      .span-7 { grid-column: span 7; }
+      .span-8 { grid-column: span 8; }
+      .span-12 { grid-column: span 12; }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      input,
+      select,
+      textarea,
+      button {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid rgba(31, 42, 42, 0.14);
+        padding: 12px 14px;
+        font: inherit;
+      }
+
+      textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+
+      input,
+      select,
+      textarea {
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      button {
+        cursor: pointer;
+        border: none;
+        background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+        color: white;
+        font-weight: 700;
+        transition: transform 120ms ease, opacity 120ms ease;
+      }
+
+      button.secondary {
+        background: rgba(21, 111, 106, 0.08);
+        color: var(--accent-strong);
+        border: 1px solid rgba(21, 111, 106, 0.16);
+      }
+
+      button.warm {
+        background: linear-gradient(135deg, #e79752 0%, var(--warm) 100%);
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .actions button {
+        width: auto;
+        min-width: 140px;
+      }
+
+      .status-bar {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .status-pill {
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: rgba(21, 111, 106, 0.07);
+        border: 1px solid rgba(21, 111, 106, 0.11);
+      }
+
+      .status-pill span {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+
+      .status-pill strong {
+        word-break: break-word;
+      }
+
+      pre {
+        margin: 0;
+        padding: 14px;
+        border-radius: 16px;
+        background: #182322;
+        color: #e7fff7;
+        min-height: 220px;
+        overflow: auto;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.62);
+        border-radius: 18px;
+        padding: 14px;
+      }
+
+      .card strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .ok {
+        color: var(--ok);
+      }
+
+      .empty {
+        padding: 20px;
+        border: 1px dashed rgba(31, 42, 42, 0.2);
+        border-radius: 16px;
+        color: var(--muted);
+      }
+
+      @media (max-width: 1100px) {
+        .hero,
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .span-4,
+        .span-5,
+        .span-6,
+        .span-7,
+        .span-8,
+        .span-12 {
+          grid-column: auto;
+        }
+
+        .status-bar,
+        .grid-2 {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="hero">
+        <div class="hero-card">
+          <div class="eyebrow">India Demo Console</div>
+          <h1>OmniMedVault in a working browser UI</h1>
+          <p>
+            This page sits directly on top of the current backend. It lets you request demo OTPs, sign in as a
+            patient or doctor, update the patient profile, upload documents, manage consent, inspect audit logs,
+            and view doctor-facing patient access.
+          </p>
+          <div class="status-bar">
+            <div class="status-pill">
+              <span>Base URL</span>
+              <strong id="apiBase">/api/v1</strong>
+            </div>
+            <div class="status-pill">
+              <span>Role</span>
+              <strong id="sessionRole">Not signed in</strong>
+            </div>
+            <div class="status-pill">
+              <span>Phone</span>
+              <strong id="sessionPhone">-</strong>
+            </div>
+            <div class="status-pill">
+              <span>Token</span>
+              <strong id="tokenState">Missing</strong>
+            </div>
+          </div>
+        </div>
+        <div class="hero-metrics">
+          <div class="hero-card metric">
+            <strong>Auth, profile, docs, consent, audit</strong>
+            <p class="muted">Everything here is backed by the live API routes already implemented on this branch.</p>
+          </div>
+          <div class="hero-card metric">
+            <strong>Demo-first workflow</strong>
+            <p class="muted">Debug OTPs are surfaced here so you can move quickly without wiring SMS first.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="layout">
+        <div class="panel span-5">
+          <h2>1. Session</h2>
+          <p class="note">Start with OTP request and verify. Patient and doctor demo flows are both supported.</p>
+          <div class="grid-2">
+            <div>
+              <label for="phone">Phone</label>
+              <input id="phone" value="+919812345678" />
+            </div>
+            <div>
+              <label for="role">Role</label>
+              <select id="role">
+                <option value="PATIENT">PATIENT</option>
+                <option value="DOCTOR">DOCTOR</option>
+              </select>
+            </div>
+            <div>
+              <label for="sessionId">Session ID</label>
+              <input id="sessionId" placeholder="Will populate after OTP request" />
+            </div>
+            <div>
+              <label for="otp">OTP</label>
+              <input id="otp" placeholder="Debug OTP appears here" />
+            </div>
+          </div>
+          <div class="actions" style="margin-top: 14px;">
+            <button id="requestOtpBtn">Request OTP</button>
+            <button class="warm" id="verifyOtpBtn">Verify OTP</button>
+            <button class="secondary" id="loadSpecialtiesBtn">Load Specialties</button>
+          </div>
+        </div>
+
+        <div class="panel span-7">
+          <h2>2. Live Response Console</h2>
+          <p class="note">Every action writes the latest request result here so you can inspect the live payloads.</p>
+          <pre id="consoleOutput">Ready.</pre>
+        </div>
+
+        <div class="panel span-6">
+          <h2>3. Patient Profile</h2>
+          <p class="note">Use a patient session to read and update the self profile.</p>
+          <div class="grid-2">
+            <div>
+              <label for="patientName">Name</label>
+              <input id="patientName" value="Asha Verma" />
+            </div>
+            <div>
+              <label for="patientDob">Date of Birth</label>
+              <input id="patientDob" value="1993-08-11" />
+            </div>
+            <div>
+              <label for="patientGender">Gender</label>
+              <input id="patientGender" value="FEMALE" />
+            </div>
+            <div>
+              <label for="patientBloodGroup">Blood Group</label>
+              <input id="patientBloodGroup" value="B+" />
+            </div>
+          </div>
+          <div style="margin-top: 12px;">
+            <label for="patientAllergies">Allergies</label>
+            <input id="patientAllergies" value="Penicillin" />
+          </div>
+          <div class="actions" style="margin-top: 14px;">
+            <button id="loadProfileBtn">Load Profile</button>
+            <button class="warm" id="saveProfileBtn">Save Profile</button>
+            <button class="secondary" id="loadAuditBtn">Load Audit Log</button>
+          </div>
+        </div>
+
+        <div class="panel span-6">
+          <h2>4. Patient Documents</h2>
+          <p class="note">Upload a file as multipart form data, then list the stored document metadata.</p>
+          <div class="grid-2">
+            <div>
+              <label for="documentType">Document Type</label>
+              <select id="documentType">
+                <option value="PRESCRIPTION">PRESCRIPTION</option>
+                <option value="LAB_REPORT">LAB_REPORT</option>
+                <option value="RECEIPT">RECEIPT</option>
+                <option value="OTHER">OTHER</option>
+              </select>
+            </div>
+            <div>
+              <label for="documentDate">Document Date</label>
+              <input id="documentDate" value="2026-05-28" />
+            </div>
+          </div>
+          <div style="margin-top: 12px;">
+            <label for="documentOcrText">OCR Text</label>
+            <textarea id="documentOcrText">Take one tablet after dinner</textarea>
+          </div>
+          <div style="margin-top: 12px;">
+            <label for="documentFile">File</label>
+            <input id="documentFile" type="file" />
+          </div>
+          <div class="actions" style="margin-top: 14px;">
+            <button id="uploadDocumentBtn">Upload Document</button>
+            <button class="secondary" id="loadDocumentsBtn">Load Documents</button>
+          </div>
+          <div id="documentsList" class="list" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="panel span-6">
+          <h2>5. Patient Consent</h2>
+          <p class="note">Grant a doctor access, then revoke it. Switch to a doctor session to see the doctor list update.</p>
+          <div class="grid-2">
+            <div>
+              <label for="doctorPhone">Doctor Phone</label>
+              <input id="doctorPhone" value="+919876543210" />
+            </div>
+            <div>
+              <label for="consentExpiry">Expires At</label>
+              <input id="consentExpiry" value="2026-12-31T00:00:00.000Z" />
+            </div>
+          </div>
+          <div class="actions" style="margin-top: 14px;">
+            <button id="grantConsentBtn">Grant Consent</button>
+            <button class="secondary" id="loadConsentsBtn">Load Active Consents</button>
+            <button class="warm" id="revokeConsentBtn">Revoke Consent</button>
+          </div>
+          <div id="consentList" class="list" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="panel span-6">
+          <h2>6. Doctor View</h2>
+          <p class="note">Use a doctor session and the current phone number to load the consented patient list.</p>
+          <div class="actions">
+            <button id="loadDoctorPatientsBtn">Load Doctor Patients</button>
+          </div>
+          <div id="doctorPatientsList" class="list" style="margin-top: 14px;"></div>
+        </div>
+
+        <div class="panel span-12">
+          <h2>7. Audit Trail</h2>
+          <p class="note">This shows the append-only audit events generated by the current patient session.</p>
+          <div id="auditList" class="list"></div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const state = {
+        baseUrl: '/api/v1',
+        sessionId: '',
+        accessToken: '',
+        role: '',
+        phone: '',
+      };
+
+      const elements = {
+        phone: document.getElementById('phone'),
+        role: document.getElementById('role'),
+        sessionId: document.getElementById('sessionId'),
+        otp: document.getElementById('otp'),
+        consoleOutput: document.getElementById('consoleOutput'),
+        sessionRole: document.getElementById('sessionRole'),
+        sessionPhone: document.getElementById('sessionPhone'),
+        tokenState: document.getElementById('tokenState'),
+        patientName: document.getElementById('patientName'),
+        patientDob: document.getElementById('patientDob'),
+        patientGender: document.getElementById('patientGender'),
+        patientBloodGroup: document.getElementById('patientBloodGroup'),
+        patientAllergies: document.getElementById('patientAllergies'),
+        documentType: document.getElementById('documentType'),
+        documentDate: document.getElementById('documentDate'),
+        documentOcrText: document.getElementById('documentOcrText'),
+        documentFile: document.getElementById('documentFile'),
+        doctorPhone: document.getElementById('doctorPhone'),
+        consentExpiry: document.getElementById('consentExpiry'),
+        documentsList: document.getElementById('documentsList'),
+        consentList: document.getElementById('consentList'),
+        doctorPatientsList: document.getElementById('doctorPatientsList'),
+        auditList: document.getElementById('auditList'),
+      };
+
+      function setConsole(title, payload) {
+        elements.consoleOutput.textContent = `${title}\n\n${JSON.stringify(payload, null, 2)}`;
+      }
+
+      function setSession(session) {
+        state.sessionId = session.sessionId || state.sessionId;
+        state.accessToken = session.accessToken || state.accessToken;
+        state.role = session.role || state.role;
+        state.phone = session.phone || state.phone;
+
+        elements.sessionId.value = state.sessionId;
+        elements.sessionRole.textContent = state.role || 'Not signed in';
+        elements.sessionPhone.textContent = state.phone || '-';
+        elements.tokenState.textContent = state.accessToken ? 'Available' : 'Missing';
+      }
+
+      async function api(path, options = {}) {
+        const headers = new Headers(options.headers || {});
+
+        if (state.accessToken && !headers.has('Authorization')) {
+          headers.set('Authorization', `Bearer ${state.accessToken}`);
+        }
+
+        const response = await fetch(`${state.baseUrl}${path}`, {
+          ...options,
+          headers,
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        const body = contentType.includes('application/json')
+          ? await response.json()
+          : await response.text();
+
+        if (!response.ok) {
+          throw { status: response.status, body };
+        }
+
+        return body;
+      }
+
+      function renderList(container, items, renderItem) {
+        if (!items.length) {
+          container.innerHTML = '<div class="empty">No data yet.</div>';
+          return;
+        }
+
+        container.innerHTML = items.map(renderItem).join('');
+      }
+
+      async function requestOtp() {
+        const payload = {
+          phone: elements.phone.value.trim(),
+          role: elements.role.value,
+        };
+
+        const result = await api('/auth/otp/request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        setSession({
+          sessionId: result.sessionId,
+          role: result.role,
+          phone: payload.phone,
+        });
+        elements.otp.value = result.debugOtp || '';
+        setConsole('OTP requested', result);
+      }
+
+      async function verifyOtp() {
+        const payload = {
+          sessionId: elements.sessionId.value.trim(),
+          phone: elements.phone.value.trim(),
+          role: elements.role.value,
+          otp: elements.otp.value.trim(),
+        };
+
+        const result = await api('/auth/otp/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        setSession({
+          accessToken: result.accessToken,
+          role: result.user.role,
+          phone: result.user.phone,
+        });
+        setConsole('OTP verified', result);
+      }
+
+      async function loadSpecialties() {
+        const result = await api('/specialties');
+        setConsole('Specialties loaded', result);
+      }
+
+      async function loadProfile() {
+        const result = await api('/patients/me');
+        elements.patientName.value = result.name || '';
+        elements.patientDob.value = result.dateOfBirth || '';
+        elements.patientGender.value = result.gender || '';
+        elements.patientBloodGroup.value = result.bloodGroup || '';
+        elements.patientAllergies.value = (result.allergies || []).join(', ');
+        setConsole('Patient profile loaded', result);
+      }
+
+      async function saveProfile() {
+        const payload = {
+          name: elements.patientName.value.trim() || undefined,
+          dateOfBirth: elements.patientDob.value.trim() || undefined,
+          gender: elements.patientGender.value.trim() || undefined,
+          bloodGroup: elements.patientBloodGroup.value.trim() || undefined,
+          allergies: elements.patientAllergies.value
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean),
+        };
+
+        const result = await api('/patients/me', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        setConsole('Patient profile updated', result);
+      }
+
+      async function uploadDocument() {
+        const file = elements.documentFile.files[0];
+
+        if (!file) {
+          throw new Error('Choose a file before uploading');
+        }
+
+        const formData = new FormData();
+        formData.set('type', elements.documentType.value);
+        formData.set('documentDate', elements.documentDate.value.trim());
+        formData.set('ocrText', elements.documentOcrText.value.trim());
+        formData.set('file', file);
+
+        const result = await api('/documents', {
+          method: 'POST',
+          body: formData,
+        });
+
+        setConsole('Document uploaded', result);
+        await loadDocuments();
+      }
+
+      async function loadDocuments() {
+        const result = await api('/documents');
+        renderList(elements.documentsList, result, (document) => `
+          <div class="card">
+            <strong>${document.type} - ${document.uploadedFileName}</strong>
+            <div class="muted">${document.documentDate || 'No document date'} | ${document.ocrStatus}</div>
+            <div class="muted">${document.storageKey}</div>
+          </div>
+        `);
+        setConsole('Documents loaded', result);
+      }
+
+      async function grantConsent() {
+        const payload = {
+          doctorPhone: elements.doctorPhone.value.trim(),
+          expiresAt: elements.consentExpiry.value.trim() || undefined,
+        };
+
+        const result = await api('/consent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        setConsole('Consent granted', result);
+        await loadConsents();
+      }
+
+      async function loadConsents() {
+        const result = await api('/consent');
+        renderList(elements.consentList, result, (consent) => `
+          <div class="card">
+            <strong>${consent.doctorPhone}</strong>
+            <div class="muted">Status: ${consent.status}</div>
+            <div class="muted">Expires: ${consent.expiresAt || 'Never'}</div>
+          </div>
+        `);
+        setConsole('Active consents loaded', result);
+      }
+
+      async function revokeConsent() {
+        const doctorPhone = elements.doctorPhone.value.trim();
+        const result = await api(`/consent/${encodeURIComponent(doctorPhone)}`, {
+          method: 'DELETE',
+        });
+
+        setConsole('Consent revoked', result);
+        await loadConsents();
+      }
+
+      async function loadDoctorPatients() {
+        const doctorId = encodeURIComponent(state.phone || elements.phone.value.trim());
+        const result = await api(`/doctors/${doctorId}/patients`);
+        renderList(elements.doctorPatientsList, result, (item) => `
+          <div class="card">
+            <strong>${item.patient.name || item.patient.phone}</strong>
+            <div class="muted">Phone: ${item.patient.phone}</div>
+            <div class="muted">Blood Group: ${item.patient.bloodGroup || 'Not set'}</div>
+            <div class="muted">Allergies: ${(item.patient.allergies || []).join(', ') || 'None'}</div>
+          </div>
+        `);
+        setConsole('Doctor patient list loaded', result);
+      }
+
+      async function loadAuditLog() {
+        const result = await api('/patients/me/audit-log');
+        renderList(elements.auditList, result, (entry) => `
+          <div class="card">
+            <strong>${entry.action} - ${entry.resourceType}</strong>
+            <div class="muted">At: ${entry.timestamp}</div>
+            <div class="muted">Actor: ${entry.actorRole} / ${entry.actorId}</div>
+          </div>
+        `);
+        setConsole('Audit log loaded', result);
+      }
+
+      async function wrap(action) {
+        try {
+          await action();
+        } catch (error) {
+          setConsole('Request failed', error);
+        }
+      }
+
+      document.getElementById('requestOtpBtn').addEventListener('click', () => wrap(requestOtp));
+      document.getElementById('verifyOtpBtn').addEventListener('click', () => wrap(verifyOtp));
+      document.getElementById('loadSpecialtiesBtn').addEventListener('click', () => wrap(loadSpecialties));
+      document.getElementById('loadProfileBtn').addEventListener('click', () => wrap(loadProfile));
+      document.getElementById('saveProfileBtn').addEventListener('click', () => wrap(saveProfile));
+      document.getElementById('loadAuditBtn').addEventListener('click', () => wrap(loadAuditLog));
+      document.getElementById('uploadDocumentBtn').addEventListener('click', () => wrap(uploadDocument));
+      document.getElementById('loadDocumentsBtn').addEventListener('click', () => wrap(loadDocuments));
+      document.getElementById('grantConsentBtn').addEventListener('click', () => wrap(grantConsent));
+      document.getElementById('loadConsentsBtn').addEventListener('click', () => wrap(loadConsents));
+      document.getElementById('revokeConsentBtn').addEventListener('click', () => wrap(revokeConsent));
+      document.getElementById('loadDoctorPatientsBtn').addEventListener('click', () => wrap(loadDoctorPatients));
+    </script>
+  </body>
+</html>

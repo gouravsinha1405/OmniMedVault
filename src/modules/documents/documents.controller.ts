@@ -14,6 +14,7 @@ import {
 import { Body } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
+import { AuditService } from '../audit/audit.service';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { DemoAuthGuard } from '../auth/demo-auth.guard';
 import { PatientRoleGuard } from '../auth/patient-role.guard';
@@ -26,7 +27,10 @@ import { DocumentsService } from './documents.service';
 @Controller('documents')
 @UseGuards(DemoAuthGuard, PatientRoleGuard)
 export class DocumentsController {
-  constructor(private readonly documentsService: DocumentsService) {}
+  constructor(
+    private readonly documentsService: DocumentsService,
+    private readonly auditService: AuditService,
+  ) {}
 
   @Post()
   @UseInterceptors(FileInterceptor('file'))
@@ -39,7 +43,20 @@ export class DocumentsController {
       throw new BadRequestException('File is required');
     }
 
-    return this.documentsService.uploadDocument(user, file, payload);
+    const document = this.documentsService.uploadDocument(user, file, payload);
+
+    this.auditService.recordEvent({
+      actor: user,
+      action: 'UPLOAD',
+      resourceType: 'DOCUMENT',
+      resourceId: document.id,
+      patientPhone: user.phone,
+      details: {
+        type: document.type,
+      },
+    });
+
+    return document;
   }
 
   @Get()
@@ -55,7 +72,20 @@ export class DocumentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) documentId: string,
   ): DocumentRecord {
-    return this.documentsService.getDocument(user.phone, documentId);
+    const document = this.documentsService.getDocument(user.phone, documentId);
+
+    this.auditService.recordEvent({
+      actor: user,
+      action: 'VIEW',
+      resourceType: 'DOCUMENT',
+      resourceId: document.id,
+      patientPhone: user.phone,
+      details: {
+        mode: 'metadata',
+      },
+    });
+
+    return document;
   }
 
   @Get(':id/download')
@@ -63,6 +93,19 @@ export class DocumentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) documentId: string,
   ) {
-    return this.documentsService.getDownloadUrl(user.phone, documentId);
+    const download = this.documentsService.getDownloadUrl(user.phone, documentId);
+
+    this.auditService.recordEvent({
+      actor: user,
+      action: 'VIEW',
+      resourceType: 'DOCUMENT',
+      resourceId: download.documentId,
+      patientPhone: user.phone,
+      details: {
+        mode: 'download-url',
+      },
+    });
+
+    return download;
   }
 }
