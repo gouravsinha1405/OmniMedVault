@@ -3,7 +3,7 @@
 ---
 
 # OmniMedVault — System Design Document
-**Version:** 2.0 | **Date:** 2026-05-22 | **Status:** Consent Model refined — Two-Layer Consent Scope (Specialty Records + Active Medication Context)
+**Version:** 2.1 | **Date:** 2026-06-08 | **Status:** Vaccination Tracker module added (Phase 1A)
 
 ---
 
@@ -36,6 +36,7 @@
 26. [Family Medical Proxy — Remote Access for Trusted Family Members](#26-family-medical-proxy--remote-access-for-trusted-family-members)
 27. [Natural Language Query Interface](#27-natural-language-query-interface)
 28. [Future Scope](#28-future-scope)
+29. [Vaccination Tracker Module](#29-vaccination-tracker-module) ← **New — Phase 1A**
 
 ---
 
@@ -60,6 +61,8 @@ In India, most citizens lack a fixed family doctor. Medical records are fragment
 - Search records by date, disease, doctor, test name
 - Grant or revoke access to a specific doctor
 - Receive medication reminders
+- Register children as managed dependents and track their vaccination schedule
+- Receive timely reminders before upcoming vaccinations are due
 
 ### Actor 2: Doctor
 - Register with verified credentials (NMC ID)
@@ -157,6 +160,18 @@ In India, most citizens lack a fixed family doctor. Medical records are fragment
 - FR38: Every record access by a Medical Proxy generates an immutable audit log entry and triggers a push notification to the patient: *"Rahul viewed your records at 2:15 PM today"*
 - FR39: The Medical Proxy can forward a document PDF externally (e.g., share a prescription with a local doctor via WhatsApp or email) — they can share documents but cannot upload, edit, or delete anything in the patient's record
 
+### Patient-Facing — Vaccination Tracker (Free, Phase 1A)
+- FR50: Parent registers a child (as a managed dependent) and the system auto-generates the complete Government of India (GOI) immunisation schedule based on the child's date of birth, covering all mandatory vaccinations from birth through 15 years of age
+- FR51: View the full vaccination timeline for each child — past vaccinations (with date and administering doctor/clinic recorded), upcoming vaccinations (with expected due date), and overdue vaccinations (highlighted prominently)
+- FR52: Mark a vaccination as administered: record the date given, vaccine brand name (optional), dose number, clinic/hospital name, and administering doctor (optional)
+- FR53: Upload a scanned copy of the physical vaccination card or certificate and link it to the corresponding vaccination record
+- FR54: Reminder system — send push notification + SMS to the parent at configurable lead times before each due vaccination (default: 7 days before, 1 day before, and on the due date)
+- FR55: Reminder acknowledgement — parent can snooze (reschedule reminder by 7 days) or mark vaccination as done directly from the notification
+- FR56: Overdue alert — if a vaccination date passes without being marked administered, escalate the reminder cadence (weekly reminders) until resolved
+- FR57: Download a printable PDF vaccination card for the child — formatted to resemble the standard GOI immunisation booklet; useful for school admissions, visa applications, and paediatric consultations
+- FR58: Support for additional/optional vaccinations beyond the mandatory GOI schedule (e.g., Varicella, Hepatitis A, HPV, Influenza, Meningococcal) — parent can add these manually
+- FR59: Vaccination history is visible to any doctor who has active consent from the parent's account, in the same child's record view (no separate consent needed if the doctor already has access to the child's medical profile)
+
 ### Patient & Doctor — Natural Language Query Interface (Premium, Phase 2)
 - FR40: A patient can type any question about their own medical history in plain everyday language — English or Hindi — and receive a direct, factual answer drawn exclusively from their actual records. Example: *"What was my haemoglobin in August 2021?"*
 - FR41: If an exact record exists for the requested time period, the system returns the precise value with the document date and source. Example response: *"Your haemoglobin was 13.3 g/dL as per the lab report dated August 5, 2021."*
@@ -209,6 +224,7 @@ In India, most citizens lack a fixed family doctor. Medical records are fragment
 | Infrastructure | Modular monolith on AWS ECS Fargate; managed services throughout |
 | Languages/UI | English + Hindi |
 | **Financial Tracking (Premium)** | Receipt OCR financial parsing; illness episode grouping; expense summaries by episode + annual; PDF expense report export |
+| **Vaccination Tracker (Free)** | GOI schedule auto-generation from child DOB; vaccination record management; push + SMS reminders; PDF vaccination card export |
 
 **Not in Phase 1A:** AI Health Insights, iOS, remaining 9 languages, ABHA, lab direct upload, offline mode, pharmacy, automated billing, family accounts, SOS.
 
@@ -377,6 +393,7 @@ src/
     notifications/ ← will become Notification Service
     institutions/  ← will become CRM Integration Service
     nl-query/      ← will become Natural Language Query Service
+    vaccinations/  ← will become Vaccination Tracker Service
   shared/
     database/
     guards/
@@ -672,6 +689,15 @@ POST   /api/v1/query/patient/:patientId          → Doctor or proxy queries a p
 # CRM / INSTITUTION
 POST   /api/v1/institutions/register     → Register hospital/clinic
 GET    /api/v1/institutions/widget-config → Widget embed config + API key
+
+# VACCINATION TRACKER
+GET    /api/v1/vaccinations/schedule                              → Get GOI master schedule (lookup — all vaccines + age milestones)
+GET    /api/v1/patients/:patientId/vaccinations                   → Get full vaccination timeline for a child (parent or consented doctor)
+PATCH  /api/v1/patients/:patientId/vaccinations/:vaccinationId    → Mark a vaccination as administered (or overdue/skipped)
+POST   /api/v1/patients/:patientId/vaccinations/extra             → Add an optional/non-GOI vaccination record
+GET    /api/v1/patients/:patientId/vaccinations/pdf               → Download printable PDF vaccination card
+GET    /api/v1/patients/:patientId/vaccinations/reminders         → List scheduled reminders for upcoming vaccinations
+PATCH  /api/v1/patients/:patientId/vaccinations/reminders/:id     → Snooze or dismiss a vaccination reminder
 ```
 
 ---
@@ -2802,7 +2828,294 @@ This positions OmniMedVault as a **Public Health Intelligence** platform alongsi
 
 ---
 
-*End of System Design Document v2.0*
+---
+
+## 29. Vaccination Tracker Module
+
+> In India, every newborn is required to receive a prescribed set of government-mandated vaccinations at specific age milestones — from birth through 15 years of age. Today this is tracked on a paper immunisation card issued at birth, which parents frequently lose, forget to update, or cannot read after the child moves between clinics. The result: missed doses, duplicate doses, and no reliable source of truth for whether a child received protection against a given disease. This module solves that problem — digitally, proactively, and permanently.
+
+---
+
+### 29.1 Problem Statement (Specific)
+
+| Current-State Problem | Impact |
+|---|---|
+| Paper vaccination card lost or damaged | No record of what was given; duplicate doses or missed protection |
+| Parent forgets upcoming due date | Vaccination delayed or skipped entirely |
+| Child moves city or changes clinic | New clinic has no history; cannot verify past vaccines |
+| School/visa asks for vaccination proof | Parent scrambles to reconstruct history from memory |
+| Doctor doesn't know what vaccines the child has received | Cannot advise correctly or flag gaps during a consultation |
+
+---
+
+### 29.2 Government of India (GOI) Immunisation Schedule
+
+The **Universal Immunisation Programme (UIP)** mandated by the Ministry of Health & Family Welfare (MoHFW) defines the following schedule. This is seeded into the system as a lookup table and used to auto-generate each child's personal schedule.
+
+| Age Milestone | Vaccines |
+|---|---|
+| At Birth | BCG, OPV-0 (Oral Polio), Hepatitis B (Birth dose) |
+| 6 Weeks | DPT-1 (Diphtheria, Pertussis, Tetanus), OPV-1, Hepatitis B-2, Hib-1, IPV-1, Rotavirus-1, PCV-1 |
+| 10 Weeks | DPT-2, OPV-2, Hib-2, Rotavirus-2, PCV-2 |
+| 14 Weeks | DPT-3, OPV-3, Hib-3, IPV-2, Rotavirus-3, PCV-3 |
+| 9 Months | Measles-Rubella (MR-1), JE-1 (Japanese Encephalitis — selected districts) |
+| 12 Months | Hepatitis A-1 (optional — increasingly standard), PCV Booster |
+| 15–18 Months | DPT Booster-1, OPV Booster, MR-2, JE-2, Hib Booster |
+| 18 Months | Hepatitis A-2 (if applicable) |
+| 2 Years | Typhoid Conjugate Vaccine (TCV) |
+| 5–6 Years | DPT Booster-2, OPV Booster |
+| 10 Years | Td (Tetanus + reduced diphtheria) |
+| 15–16 Years | Td (Tetanus + reduced diphtheria) |
+
+> **Note:** The schedule above reflects the 2023 UIP guidelines. The system stores the schedule in a versioned lookup table (`vaccination_schedule_versions`) so future MoHFW revisions can be applied without schema changes. Children born before a revision retain the schedule version applicable at their birth date.
+
+**Optional (non-GOI) vaccines supported:**
+Varicella, Hepatitis A (full series), HPV (Gardasil/Cervarix), Influenza (annual), Meningococcal, Typhoid (Vi-polysaccharide as alternative to TCV), and any custom entry the parent adds.
+
+---
+
+### 29.3 Core Functional Design
+
+#### Auto-Schedule Generation
+
+When a parent registers a child as a managed dependent and enters the child's date of birth, the system:
+1. Looks up the applicable GOI schedule version for the child's birth date
+2. Computes the exact due date for each vaccine: `child_dob + age_milestone_days`
+3. Creates one row per vaccine in `child_vaccinations` with `status = UPCOMING` (or `status = DUE` if the due date is today or past)
+4. Optionally sets all past-milestone vaccines to `status = NEEDS_VERIFICATION` — prompting the parent to confirm whether those were given (common for children added to the app after birth)
+
+#### Vaccination Status Lifecycle
+
+```
+UPCOMING     ← due date is in the future; reminder not yet sent
+    │
+    ▼ (7 days before due date)
+REMINDER_SENT  ← first reminder dispatched
+    │
+    ▼ (on due date)
+DUE          ← due date reached; daily escalation begins
+    │
+    ├── Parent marks as administered → ADMINISTERED
+    │
+    └── Due date passes without action → OVERDUE
+              │
+              ▼ (weekly reminders until resolved)
+    Parent marks administered → ADMINISTERED
+    Parent marks skipped      → SKIPPED (with reason)
+```
+
+#### Reminder Engine
+
+The reminder engine runs as a scheduled job (cron, daily at 8 AM IST) and:
+
+1. Queries all `child_vaccinations` rows where:
+   - `status = UPCOMING` AND `due_date = TODAY + 7`  → send 7-day reminder
+   - `status IN (UPCOMING, REMINDER_SENT)` AND `due_date = TOMORROW`  → send 1-day reminder
+   - `status IN (UPCOMING, REMINDER_SENT)` AND `due_date = TODAY`  → send due-today reminder (update status to `DUE`)
+   - `status = DUE` AND `due_date < TODAY`  → update to `OVERDUE`; send overdue reminder
+   - `status = OVERDUE`  → send weekly follow-up reminder until `ADMINISTERED` or `SKIPPED`
+
+2. All reminders sent via the existing `NotificationService`:
+   - **Push** (high-priority FCM channel)
+   - **SMS** (AWS SNS / Twilio) — because a reminder on a device the parent isn't looking at is a missed reminder
+
+3. Reminder template (English):
+   > *"Vaccination due soon — [Child Name]'s [Vaccine Name] is due on [Date]. Tap to mark as done or find a nearby clinic."*
+
+4. Overdue template:
+   > *"Overdue vaccination — [Child Name] was due for [Vaccine Name] on [Date]. Please visit a clinic soon. Tap to mark as done or snooze."*
+
+---
+
+### 29.4 Data Models
+
+```sql
+-- Master GOI schedule (lookup — seeded at deployment; versioned)
+vaccination_schedule
+  id                UUID (PK)
+  schedule_version  VARCHAR(10)  NOT NULL  -- "UIP_2023", "UIP_2025", etc.
+  vaccine_code      VARCHAR(50)  NOT NULL  -- "BCG", "OPV_0", "DPT_1", "MR_1", etc.
+  vaccine_name      VARCHAR(200) NOT NULL  -- "BCG (Bacillus Calmette-Guérin)"
+  disease_protected VARCHAR(500) NOT NULL  -- "Tuberculosis"
+  age_days_min      INTEGER      NOT NULL  -- earliest acceptable age in days from birth
+  age_days_target   INTEGER      NOT NULL  -- ideal due age in days from birth (used for schedule generation)
+  age_days_max      INTEGER                -- latest acceptable age (nullable — some have no hard cap)
+  dose_number       INTEGER      NOT NULL  -- 1, 2, 3, etc. (for multi-dose vaccines)
+  is_mandatory      BOOLEAN      NOT NULL  -- true = GOI UIP; false = optional/recommended
+  notes             TEXT                   -- catch-up instructions, regional notes
+  sort_order        INTEGER      NOT NULL  -- display order on the vaccination card
+  is_active         BOOLEAN      NOT NULL DEFAULT TRUE
+  valid_from_dob    DATE         NOT NULL  -- schedule version applies to children born on or after this date
+  valid_until_dob   DATE                   -- nullable — open-ended for the current version
+
+-- Per-child vaccination schedule (generated from master; one row per vaccine per child)
+child_vaccinations
+  id                   UUID (PK)
+  patient_id           UUID (FK → patients)        -- the child's patient record
+  guardian_patient_id  UUID (FK → patients)        -- the parent/primary account holder managing this child
+  schedule_entry_id    UUID (FK → vaccination_schedule)
+  vaccine_code         VARCHAR(50)  NOT NULL        -- snapshot from schedule at generation time
+  vaccine_name         VARCHAR(200) NOT NULL        -- snapshot
+  dose_number          INTEGER      NOT NULL
+  due_date             DATE         NOT NULL        -- child_dob + age_days_target
+  status               VARCHAR(20)  NOT NULL DEFAULT 'UPCOMING'
+                       -- UPCOMING | REMINDER_SENT | DUE | ADMINISTERED | OVERDUE | SKIPPED | NEEDS_VERIFICATION
+  administered_date    DATE                         -- set when parent marks as done
+  vaccine_brand        VARCHAR(200)                 -- optional: "Pentavac SD", "Rotarix", etc.
+  administering_clinic VARCHAR(300)                 -- optional: clinic/hospital name
+  administering_doctor VARCHAR(200)                 -- optional: doctor name
+  document_id          UUID (FK → documents, nullable)  -- link to uploaded vaccination card scan
+  notes                TEXT                         -- parent notes (e.g., "slight fever post-dose")
+  skip_reason          TEXT                         -- reason if status = SKIPPED
+  last_reminder_sent_at TIMESTAMPTZ
+  reminder_snooze_until DATE                        -- set when parent snoozes a reminder
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+INDEX idx_child_vax_patient_id         ON child_vaccinations(patient_id)
+INDEX idx_child_vax_guardian_id        ON child_vaccinations(guardian_patient_id)
+INDEX idx_child_vax_status_due_date    ON child_vaccinations(status, due_date)
+INDEX idx_child_vax_patient_status     ON child_vaccinations(patient_id, status)
+
+-- Vaccination reminder log (for audit and deduplication)
+vaccination_reminder_logs
+  id                UUID (PK)
+  child_vaccination_id UUID (FK → child_vaccinations)
+  reminder_type     VARCHAR(20)  NOT NULL  -- SEVEN_DAY | ONE_DAY | DUE_TODAY | OVERDUE | WEEKLY_OVERDUE
+  sent_at           TIMESTAMPTZ  NOT NULL
+  channel           VARCHAR(10)  NOT NULL  -- PUSH | SMS
+  delivery_status   VARCHAR(20)  NOT NULL  -- SENT | FAILED | SNOOZED
+```
+
+---
+
+### 29.5 API Design
+
+```
+# VACCINATION TRACKER
+
+GET    /api/v1/vaccinations/schedule
+  → Returns the full GOI master schedule (all vaccines, due ages, disease info)
+  → Used to populate the "what does this vaccine protect against?" info screen
+  → Cached; rarely changes
+
+GET    /api/v1/patients/:patientId/vaccinations
+  → Returns the child's full vaccination timeline
+  → Auth: parent (guardian_patient_id = authenticated user) OR consented DOCTOR
+  → Query params: status (filter), from/to (date range)
+  → Response: grouped by status (UPCOMING, DUE, OVERDUE, ADMINISTERED, SKIPPED)
+
+PATCH  /api/v1/patients/:patientId/vaccinations/:vaccinationId
+  → Mark a vaccination as administered, skipped, or update details
+  → Auth: parent only (not doctor — doctors observe, not update vaccination records)
+  → Body: { status, administeredDate?, vaccineBrand?, administeringClinic?,
+             administeringDoctor?, notes?, skipReason? }
+
+POST   /api/v1/patients/:patientId/vaccinations/extra
+  → Add an optional or non-GOI vaccination not on the auto-generated schedule
+  → Auth: parent only
+  → Body: { vaccineName, diseaseProtected, administeredDate, dose?, vaccineBrand?,
+             administeringClinic?, administeringDoctor?, notes?, documentId? }
+
+GET    /api/v1/patients/:patientId/vaccinations/pdf
+  → Generate and return a pre-signed URL to a downloadable PDF vaccination card
+  → Auth: parent OR consented DOCTOR
+  → PDF resembles the standard GOI immunisation booklet layout
+
+GET    /api/v1/patients/:patientId/vaccinations/reminders
+  → List all upcoming reminder schedules for this child's vaccinations
+  → Auth: parent only
+
+PATCH  /api/v1/patients/:patientId/vaccinations/reminders/:vaccinationId
+  → Snooze (push reminder by N days) or dismiss a reminder
+  → Auth: parent only
+  → Body: { action: 'SNOOZE' | 'DISMISS', snoozeDays?: number }
+```
+
+---
+
+### 29.6 Notification Events
+
+Added to the Notification Service event catalogue:
+
+| Event | Trigger | Recipient | Channels |
+|---|---|---|---|
+| `vaccination.reminder_7day` | 7 days before due_date | Parent | Push + SMS |
+| `vaccination.reminder_1day` | 1 day before due_date | Parent | Push + SMS |
+| `vaccination.due_today` | On due_date | Parent | Push + SMS |
+| `vaccination.overdue` | due_date passed without ADMINISTERED | Parent | Push + SMS |
+| `vaccination.overdue_weekly` | Every 7 days while OVERDUE | Parent | Push + SMS |
+
+All vaccination notification templates are added to `src/modules/notifications/templates/vaccination/` in English and Hindi.
+
+---
+
+### 29.7 PDF Vaccination Card
+
+Generated on demand via the existing PDF generation infrastructure (Puppeteer/PDFKit). The card is formatted to resemble the standard GOI **Mother and Child Protection (MCP) Card** layout:
+
+- Child's name, date of birth, blood group
+- Each vaccine row: vaccine name, disease, due date, date administered, clinic name, batch number (if recorded)
+- GOI and OmniMedVault branding footer
+- QR code linking to the child's vaccination record (parent-controlled visibility)
+- Suitable for: school admissions, paediatric consultations, travel visas, international vaccination requirements
+
+---
+
+### 29.8 Integration with Existing Modules
+
+| Integration Point | Detail |
+|---|---|
+| **Document Module (S04)** | Uploaded vaccination card scans are stored as `type = VACCINATION_CARD` documents, linked to the corresponding `child_vaccinations` row via `document_id` |
+| **Patient Profile (S02)** | Child's `dateOfBirth` on the patient profile is the anchor for schedule generation; `guardian_patient_id` links to the managing parent's account |
+| **Notification Service (S10)** | Vaccination reminders are additional events consumed by the existing notification pipeline — no separate notification infrastructure |
+| **Consent Module (S08)** | A paediatrician with active consent to a child's records can view the vaccination timeline via `GET /api/v1/patients/:patientId/vaccinations` — same consent gate as all other patient data |
+| **Search Module (S07)** | Vaccination records are indexed in OpenSearch (new index `omnimedvault_vaccinations`) enabling search by vaccine name, disease, status, date |
+| **Emergency QR (S12)** | The Emergency QR for a child optionally shows overdue vaccinations as a clinical alert alongside blood group and allergies |
+
+---
+
+### 29.9 Monolith Module Structure Addition
+
+```
+src/
+  modules/
+    vaccinations/          ← NEW — Phase 1A
+      controllers/
+        vaccinations.controller.ts
+      services/
+        vaccinations.service.ts
+        reminder-scheduler.service.ts   ← cron job; daily 8 AM IST
+        schedule-generator.service.ts   ← generates child_vaccinations rows from master schedule
+        pdf-card.service.ts             ← vaccination card PDF generation
+      repositories/
+        child-vaccinations.repository.ts
+        vaccination-schedule.repository.ts
+      workers/
+        reminder.worker.ts              ← dispatches reminders via NotificationService
+      dto/
+        mark-administered.dto.ts
+        add-extra-vaccine.dto.ts
+        snooze-reminder.dto.ts
+```
+
+---
+
+### 29.10 Key Design Decisions & Rationale
+
+| Decision | Rationale |
+|---|---|
+| **Free feature (not Premium)** | Vaccination tracking is a fundamental child health safety tool. Paywalling it would contradict the product's mission. Reminders for a vaccine that protects against measles should not be a luxury. The freemium model applies for premium add-ons (expense reports, AI insights); child immunisation is core. |
+| **Auto-generate the full 15-year schedule at birth** | Parents don't need to know when the next vaccine is due — the system tells them. Zero cognitive load. |
+| **Push + SMS for every reminder** | A push-only reminder fails if the app is uninstalled or the phone is switched. For something as critical as a missed vaccination, SMS is the fallback that works on any device. |
+| **Parent marks administered; doctor observes only** | Doctors don't administer vaccines in this workflow — they observe history. The parent is the record-keeper. This avoids trust/liability issues if a doctor accidentally marks something administered incorrectly. |
+| **Versioned schedule table** | The GOI UIP is periodically updated (new vaccines added, timings revised). A versioned lookup ensures children born under different schedule versions retain accurate history. |
+| **NEEDS_VERIFICATION status for children added after birth** | A child added to the app at age 3 cannot have vaccines auto-marked ADMINISTERED for the first 3 years. Instead, each past-due row is flagged for the parent to confirm. This prevents false positives. |
+| **Optional vaccine support** | Many urban, educated parents give optional vaccines (Varicella, HPV). Excluding them would leave gaps in the record and reduce completeness. The system supports them without making them seem mandatory. |
+
+---
+
+*End of System Design Document v2.1*
 
 ---
 

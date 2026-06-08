@@ -1,6 +1,6 @@
 # OmniMedVault — Engineering Specifications
 
-**Version:** 1.0 | **Date:** 2026-06-01 | **Status:** Phase 1A Active
+**Version:** 1.1 | **Date:** 2026-06-08 | **Status:** Phase 1A Active — Vaccination Tracker module added
 
 > This document is the authoritative engineering spec for implementation. It translates `SYSTEM_DESIGN_OmniMedVault.md` and `OMNIMEDVAULT_CONSTITUTION.md` into precise, implementable contracts for every module. A developer picking up any spec here should be able to implement it without referring back to the design doc for clarification.
 >
@@ -24,6 +24,7 @@
 - [S11 — Institution Onboarding & CRM Widget](#s11--institution-onboarding--crm-widget)
 - [S12 — Emergency QR Code](#s12--emergency-qr-code)
 - [S13 — Financial Tracking & Illness Episodes (Premium)](#s13--financial-tracking--illness-episodes-premium)
+- [S19 — Vaccination Tracker](#s19--vaccination-tracker)
 
 **Phase 1B — AI Health Insights (Months 5–8)**
 - [S14 — AI Health Insights Engine](#s14--ai-health-insights-engine)
@@ -2036,6 +2037,369 @@ INDEX idx_episodes_patient_id     ON illness_episodes(patient_id)
 
 ---
 
+---
+
+## S19 — Vaccination Tracker
+
+**Module:** `src/modules/vaccinations/`
+**Functional Requirements:** FR50–FR59
+**Priority:** P1 (Phase 1A — Free feature, available to all patients)
+
+### Overview
+
+Digital tracking of a child's complete Government of India (GOI) immunisation schedule from birth through 15 years of age. When a parent registers a child as a managed dependent, the system auto-generates the full vaccine schedule based on the child's date of birth and sends timely push + SMS reminders before each vaccination is due. Parents can upload scanned vaccination card photos, mark vaccinations as administered, and download a printable PDF vaccination card.
+
+### Business Rules
+
+| Rule | Detail |
+|------|--------|
+| BR-VAX01 | The GOI UIP schedule is seeded in `vaccination_schedule` table; one row per vaccine per dose. The schedule version applied to a child is determined by their `date_of_birth` — versioned for future GOI updates |
+| BR-VAX02 | On registration of a child as a managed dependent, the system creates `child_vaccinations` rows for all applicable vaccines. Past-due vaccines (child added after birth) are set to `status = NEEDS_VERIFICATION`; future vaccines to `status = UPCOMING` |
+| BR-VAX03 | Only the guardian (parent managing the account) can mark vaccinations as administered or skipped. Doctors with consent can view but not modify vaccination records |
+| BR-VAX04 | A vaccination can be marked administered with a date in the past (parents often update retrospectively) |
+| BR-VAX05 | `administered_date` must not be in the future |
+| BR-VAX06 | Reminder engine runs as a daily cron at 08:00 IST. Reminders fire on: 7 days before `due_date`, 1 day before, on `due_date`, and weekly thereafter while `status = OVERDUE` |
+| BR-VAX07 | A parent can snooze a reminder by 7 days. Snooze is recorded in `reminder_snooze_until`; the cron skips this vaccination until after the snooze date |
+| BR-VAX08 | Free tier: vaccination tracking is available to all patients. No `PremiumGuard` on vaccination endpoints |
+| BR-VAX09 | Optional (non-GOI) vaccines can be added by the parent via `POST /vaccinations/extra`. These are not auto-generated and have no reminder unless explicitly requested |
+| BR-VAX10 | Uploaded vaccination card documents use `type = VACCINATION_CARD` in the `documents` table and are linked to a `child_vaccinations` row via `document_id` |
+| BR-VAX11 | A PDF vaccination card is generated on demand (not stored permanently); a pre-signed URL is returned with 24-hour expiry |
+| BR-VAX12 | Vaccination records for a child are visible to any doctor who has active consent from the managing parent's account — same `ConsentGuard` as all other patient data |
+
+### API Contracts
+
+---
+
+#### `GET /api/v1/vaccinations/schedule`
+
+Returns the complete GOI master vaccination schedule. Used to populate informational screens ("What does this vaccine protect against?").
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`
+**Cache:** Response cached 24 hours in Redis (schedule rarely changes)
+
+**Response `200 OK`:**
+```typescript
+{
+  data: Array<{
+    id: string;
+    scheduleVersion: string;      // "UIP_2023"
+    vaccineCode: string;          // "BCG", "DPT_1", "MR_1"
+    vaccineName: string;          // "BCG (Bacillus Calmette-Guérin)"
+    diseaseProtected: string;     // "Tuberculosis"
+    ageDaysTarget: number;        // 0 = at birth, 42 = 6 weeks, etc.
+    doseNumber: number;
+    isMandatory: boolean;
+    notes: string | null;
+    sortOrder: number;
+  }>;
+}
+```
+
+---
+
+#### `GET /api/v1/patients/:patientId/vaccinations`
+
+Returns the full vaccination timeline for a child. Grouped by status.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT', 'DOCTOR'])`,
+- If caller is `PATIENT`: `patientId` must belong to a child managed by the authenticated parent
+- If caller is `DOCTOR`: `ConsentGuard` (active consent from the managing parent's account)
+
+**Query Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `status` | string | Filter: `UPCOMING \| DUE \| OVERDUE \| ADMINISTERED \| SKIPPED \| NEEDS_VERIFICATION` |
+| `from` | string | Date range start (due_date or administered_date) |
+| `to` | string | Date range end |
+
+**Response `200 OK`:**
+```typescript
+{
+  child: {
+    patientId: string;
+    name: string;
+    dateOfBirth: string;         // "YYYY-MM-DD"
+    ageInMonths: number;
+  };
+  summary: {
+    total: number;
+    administered: number;
+    upcoming: number;
+    overdue: number;
+    needsVerification: number;
+  };
+  data: Array<{
+    id: string;
+    vaccineCode: string;
+    vaccineName: string;
+    diseaseProtected: string;
+    doseNumber: number;
+    dueDate: string;              // "YYYY-MM-DD"
+    status: 'UPCOMING' | 'REMINDER_SENT' | 'DUE' | 'ADMINISTERED' | 'OVERDUE' | 'SKIPPED' | 'NEEDS_VERIFICATION';
+    administeredDate: string | null;
+    vaccineBrand: string | null;
+    administeringClinic: string | null;
+    administeringDoctor: string | null;
+    documentId: string | null;   // linked vaccination card scan
+    notes: string | null;
+    isMandatory: boolean;
+    lastReminderSentAt: string | null;
+    reminderSnoozeUntil: string | null;
+  }>;
+}
+```
+
+---
+
+#### `PATCH /api/v1/patients/:patientId/vaccinations/:vaccinationId`
+
+Mark a vaccination as administered, skipped, or update its details. Parent only.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT'])`, + service-layer check: authenticated user is the `guardian_patient_id` for this child
+
+**Request Body:**
+```typescript
+{
+  status: 'ADMINISTERED' | 'SKIPPED' | 'NEEDS_VERIFICATION';
+  administeredDate?: string;       // "YYYY-MM-DD"; required if status = ADMINISTERED; must be past date
+  vaccineBrand?: string;           // max 200 chars; optional
+  administeringClinic?: string;    // max 300 chars; optional
+  administeringDoctor?: string;    // max 200 chars; optional
+  documentId?: string;             // UUID of an uploaded vaccination card scan
+  notes?: string;                  // max 500 chars
+  skipReason?: string;             // required if status = SKIPPED; max 500 chars
+}
+```
+
+**Response `200 OK`:** Full updated vaccination record (same shape as data item above)
+
+**Error Scenarios:**
+
+| Condition | errorCode | HTTP |
+|-----------|-----------|------|
+| `vaccinationId` not found or not owned by this parent | 1003 | 404 |
+| `administeredDate` is a future date | 1005 | 400 |
+| `status = SKIPPED` but no `skipReason` | 1005 | 400 |
+| Caller is not the managing guardian | 1002 | 403 |
+
+---
+
+#### `POST /api/v1/patients/:patientId/vaccinations/extra`
+
+Add an optional or non-GOI vaccination. Parent only.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT'])`, + guardian ownership check
+
+**Request Body:**
+```typescript
+{
+  vaccineName: string;             // required; max 200 chars
+  diseaseProtected: string;        // required; max 500 chars
+  administeredDate: string;        // "YYYY-MM-DD"; required; must be past date
+  doseNumber?: number;             // default 1
+  vaccineBrand?: string;           // max 200 chars
+  administeringClinic?: string;    // max 300 chars
+  administeringDoctor?: string;    // max 200 chars
+  documentId?: string;             // UUID of linked scan
+  notes?: string;                  // max 500 chars
+}
+```
+
+**Response `201 Created`:** Full vaccination record
+
+---
+
+#### `GET /api/v1/patients/:patientId/vaccinations/pdf`
+
+Generate a printable PDF vaccination card. Returns a pre-signed URL.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT', 'DOCTOR'])`, ConsentGuard if DOCTOR
+
+**Response `200 OK`:**
+```typescript
+{
+  pdfUrl: string;          // pre-signed S3 / CloudFront URL, 24-hour expiry
+  generatedAt: string;     // ISO 8601
+}
+```
+
+---
+
+#### `PATCH /api/v1/patients/:patientId/vaccinations/reminders/:vaccinationId`
+
+Snooze or dismiss a vaccination reminder. Parent only.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT'])`, + guardian ownership check
+
+**Request Body:**
+```typescript
+{
+  action: 'SNOOZE' | 'DISMISS';
+  snoozeDays?: number;     // required if action = SNOOZE; min 1, max 30
+}
+```
+
+**Response `200 OK`:**
+```typescript
+{
+  vaccinationId: string;
+  action: string;
+  snoozeUntil: string | null;   // "YYYY-MM-DD"
+}
+```
+
+---
+
+### Reminder Scheduler (Background Job)
+
+**File:** `src/modules/vaccinations/services/reminder-scheduler.service.ts`
+**Schedule:** Cron `0 8 * * *` — daily at 08:00 IST (02:30 UTC)
+**Mechanism:** NestJS `@Cron` decorator using `@nestjs/schedule`
+
+```
+Daily 08:00 IST — Reminder Scheduler fires:
+  │
+  ▼
+Query child_vaccinations WHERE:
+  ├── status = 'UPCOMING' AND due_date = TODAY + 7  → emit vaccination.reminder_7day
+  ├── status IN ('UPCOMING','REMINDER_SENT') AND due_date = TOMORROW  → emit vaccination.reminder_1day
+  ├── status IN ('UPCOMING','REMINDER_SENT') AND due_date = TODAY  → update to DUE; emit vaccination.due_today
+  ├── status = 'DUE' AND due_date < TODAY  → update to OVERDUE; emit vaccination.overdue
+  └── status = 'OVERDUE' AND (last_reminder_sent_at IS NULL
+       OR last_reminder_sent_at < TODAY - 7)  → emit vaccination.overdue_weekly
+  │
+  ▼
+For each matched row:
+  - Check reminder_snooze_until: if set and > TODAY → skip this row
+  - Emit event to NotificationService
+  - Write row to vaccination_reminder_logs
+  - Update last_reminder_sent_at on child_vaccinations row
+```
+
+---
+
+### Database
+
+```sql
+-- Master GOI schedule (seeded; versioned)
+vaccination_schedule
+  id                VARCHAR(36)   PRIMARY KEY
+  schedule_version  VARCHAR(20)   NOT NULL              -- "UIP_2023"
+  vaccine_code      VARCHAR(50)   NOT NULL              -- "BCG", "OPV_0", "DPT_1"
+  vaccine_name      VARCHAR(200)  NOT NULL
+  disease_protected VARCHAR(500)  NOT NULL
+  age_days_min      INTEGER       NOT NULL
+  age_days_target   INTEGER       NOT NULL
+  age_days_max      INTEGER
+  dose_number       INTEGER       NOT NULL DEFAULT 1
+  is_mandatory      BOOLEAN       NOT NULL DEFAULT TRUE
+  notes             TEXT
+  sort_order        INTEGER       NOT NULL DEFAULT 0
+  is_active         BOOLEAN       NOT NULL DEFAULT TRUE
+  valid_from_dob    DATE          NOT NULL
+  valid_until_dob   DATE
+
+UNIQUE CONSTRAINT uq_vax_schedule ON vaccination_schedule(vaccine_code, dose_number, schedule_version)
+
+-- Per-child vaccination records
+child_vaccinations
+  id                      VARCHAR(36)   PRIMARY KEY
+  patient_id              VARCHAR(36)   NOT NULL  REFERENCES patients(id)
+  guardian_patient_id     VARCHAR(36)   NOT NULL  REFERENCES patients(id)
+  schedule_entry_id       VARCHAR(36)   REFERENCES vaccination_schedule(id)  -- null for extra vaccines
+  vaccine_code            VARCHAR(50)   NOT NULL
+  vaccine_name            VARCHAR(200)  NOT NULL
+  dose_number             INTEGER       NOT NULL DEFAULT 1
+  due_date                DATE          NOT NULL
+  status                  VARCHAR(25)   NOT NULL DEFAULT 'UPCOMING'
+  administered_date       DATE
+  vaccine_brand           VARCHAR(200)
+  administering_clinic    VARCHAR(300)
+  administering_doctor    VARCHAR(200)
+  document_id             VARCHAR(36)   REFERENCES documents(id)
+  notes                   TEXT
+  skip_reason             TEXT
+  last_reminder_sent_at   TIMESTAMPTZ
+  reminder_snooze_until   DATE
+  is_extra_vaccine        BOOLEAN       NOT NULL DEFAULT FALSE  -- true for non-GOI additions
+  created_at              TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  updated_at              TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+
+INDEX idx_child_vax_patient_id         ON child_vaccinations(patient_id)
+INDEX idx_child_vax_guardian_id        ON child_vaccinations(guardian_patient_id)
+INDEX idx_child_vax_status_due         ON child_vaccinations(status, due_date)
+INDEX idx_child_vax_patient_status     ON child_vaccinations(patient_id, status)
+
+-- Reminder delivery log
+vaccination_reminder_logs
+  id                       VARCHAR(36)   PRIMARY KEY
+  child_vaccination_id     VARCHAR(36)   NOT NULL  REFERENCES child_vaccinations(id)
+  reminder_type            VARCHAR(25)   NOT NULL  -- SEVEN_DAY | ONE_DAY | DUE_TODAY | OVERDUE | WEEKLY_OVERDUE
+  sent_at                  TIMESTAMPTZ   NOT NULL
+  channel                  VARCHAR(10)   NOT NULL  -- PUSH | SMS
+  delivery_status          VARCHAR(20)   NOT NULL  -- SENT | FAILED
+  created_at               TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+
+INDEX idx_vax_reminder_log_vaccination_id ON vaccination_reminder_logs(child_vaccination_id)
+```
+
+### OpenSearch Index
+
+**Index: `omnimedvault_vaccinations`**
+```json
+{
+  "mappings": {
+    "properties": {
+      "vaccinationId":     { "type": "keyword" },
+      "patientId":         { "type": "keyword" },
+      "guardianPatientId": { "type": "keyword" },
+      "vaccineCode":       { "type": "keyword" },
+      "vaccineName":       { "type": "text" },
+      "diseaseProtected":  { "type": "text" },
+      "dueDate":           { "type": "date" },
+      "administeredDate":  { "type": "date" },
+      "status":            { "type": "keyword" },
+      "isMandatory":       { "type": "boolean" }
+    }
+  }
+}
+```
+
+### Notification Templates (added to S10)
+
+| Event | English Template |
+|-------|-----------------|
+| `vaccination.reminder_7day` | "[Child Name]'s [Vaccine Name] (dose [N]) is due in 7 days on [Date]. Tap to find a nearby clinic or mark as done." |
+| `vaccination.reminder_1day` | "Tomorrow — [Child Name] is due for [Vaccine Name]. Don't miss this important vaccination." |
+| `vaccination.due_today` | "Today is the day — [Child Name]'s [Vaccine Name] is due today. Visit your nearest health centre." |
+| `vaccination.overdue` | "Overdue — [Child Name] missed [Vaccine Name] on [Date]. Please visit a clinic soon. Tap to update." |
+| `vaccination.overdue_weekly` | "Reminder — [Child Name]'s [Vaccine Name] is still overdue (since [Date]). Please act soon." |
+
+### Acceptance Criteria
+
+- [ ] Registering a child born today auto-generates a complete 15-year schedule with correct due dates
+- [ ] Registering a child aged 18 months sets all past-milestone vaccines to `NEEDS_VERIFICATION` and future vaccines to `UPCOMING`
+- [ ] Daily cron at 08:00 IST dispatches 7-day, 1-day, and due-today reminders correctly
+- [ ] Overdue reminder fires weekly until vaccination is marked ADMINISTERED or SKIPPED
+- [ ] Snoozed reminder is not re-sent until after `reminder_snooze_until` date
+- [ ] Doctor with consent can view the child's vaccination timeline (GET) but cannot PATCH it
+- [ ] Authenticated parent without guardian relationship returns 403 (cannot see another parent's child)
+- [ ] PDF card generates with correct formatting and correct status for each vaccine
+- [ ] No `PremiumGuard` — free-tier patient can access all vaccination endpoints
+- [ ] `vaccination_reminder_logs` is INSERT-only (no UPDATE or DELETE — append-only per constitution)
+- [ ] Uploaded vaccination card scan stored with `type = VACCINATION_CARD` and linked to `child_vaccinations.document_id`
+
+---
+
+---
+
 ## S14 — AI Health Insights Engine
 
 **Phase:** 1B (Months 5–8) | **Module:** `src/modules/insights/`  
@@ -2253,6 +2617,11 @@ All domain events emitted via NestJS `EventEmitter2`. Event listeners are in `sr
 | `doctor.verified` | `{ doctorId }` | Notification |
 | `doctor.nmc_failed` | `{ doctorId }` | Notification, PLATFORM_ADMIN alert |
 | `doctor.record_accessed` | `{ doctorId, patientId, resourceType, resourceId }` | Audit logger, batched notification |
+| `vaccination.reminder_7day` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log |
+| `vaccination.reminder_1day` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log |
+| `vaccination.due_today` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log, status updater |
+| `vaccination.overdue` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log, status updater |
+| `vaccination.overdue_weekly` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log |
 
 ---
 
@@ -2272,12 +2641,16 @@ Migrations must be applied in this order (each depends on the previous):
 10. `{ts}__create_audit_logs.ts`  ← append-only trigger applied here
 11. `{ts}__create_illness_episodes.ts`
 12. `{ts}__create_medical_expenses.ts`
-13. `{ts}__create_health_metrics.ts`  ← Phase 1B
-14. `{ts}__create_health_insights.ts`  ← Phase 1B
-15. `{ts}__create_nl_queries.ts`  ← Phase 2 (append-only trigger applied)
-16. `{ts}__create_family_medical_proxies.ts`  ← Phase 2
-17. `{ts}__create_family_members.ts`  ← Phase 2
-18. `{ts}__create_sos_events.ts`  ← Phase 2
+13. `{ts}__create_vaccination_schedule.ts`  ← Phase 1A
+14. `{ts}__seed_vaccination_schedule_uip2023.ts`  ← Phase 1A
+15. `{ts}__create_child_vaccinations.ts`  ← Phase 1A
+16. `{ts}__create_vaccination_reminder_logs.ts`  ← Phase 1A (append-only trigger applied here)
+17. `{ts}__create_health_metrics.ts`  ← Phase 1B
+18. `{ts}__create_health_insights.ts`  ← Phase 1B
+19. `{ts}__create_nl_queries.ts`  ← Phase 2 (append-only trigger applied)
+20. `{ts}__create_family_medical_proxies.ts`  ← Phase 2
+21. `{ts}__create_family_members.ts`  ← Phase 2
+22. `{ts}__create_sos_events.ts`  ← Phase 2
 
 ---
 
@@ -2309,6 +2682,7 @@ Before Phase 1A is considered complete:
 - [ ] S11 Institutions — onboarding, API key, widget embed
 - [ ] S12 Emergency QR — QR generation; public profile URL
 - [ ] S13 Financial Tracking — receipt parser; episodes; expense summary; PDF report (Premium)
+- [ ] S19 Vaccination Tracker — schedule generation; mark administered; reminders; PDF card (Free)
 
 **Compliance & Security**
 - [ ] Column-level PHI encryption verified in production DB snapshot
@@ -2316,11 +2690,15 @@ Before Phase 1A is considered complete:
 - [ ] Audit log immutability: DB trigger preventing UPDATE/DELETE verified
 - [ ] ConsentGuard 100% coverage: every cross-patient data access returns 403 when consent inactive
 - [ ] PremiumGuard 100% coverage: every S13 endpoint returns 402 for free-tier patient
+- [ ] Vaccination reminder cron fires at 08:00 IST daily; all reminder types dispatched correctly
+- [ ] Guardian ownership check: a parent cannot access another parent's child vaccination records
+- [ ] `vaccination_reminder_logs` INSERT-only: no UPDATE or DELETE path exists in the repository
+- [ ] Doctor with consent can GET vaccination records; PATCH returns 403 for doctor role
 - [ ] Pre-signed URLs verified: S3 keys never appear in any API response
 
 ---
 
-*Specs version: 1.0 | Date: 2026-06-01 | Aligned with SYSTEM_DESIGN_OmniMedVault.md v2.0 and OMNIMEDVAULT_CONSTITUTION.md v1.0*
+*Specs version: 1.1 | Date: 2026-06-08 | Aligned with SYSTEM_DESIGN_OmniMedVault.md v2.1 and OMNIMEDVAULT_CONSTITUTION.md v1.0*
 
 ---
 

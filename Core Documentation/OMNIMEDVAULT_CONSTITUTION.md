@@ -101,6 +101,7 @@ src/
     notifications/  ← SMS (SNS), Email (SES), Push (FCM)
     institutions/   ← Hospital onboarding; CRM widget; API keys
     expenses/       ← Receipt parsing; illness episodes (Premium)
+    vaccinations/   ← Vaccination tracker; GOI schedule; reminders (Phase 1A — Free)
     insights/       ← AI Health Insights engine (Phase 1B)
     nl-query/       ← Natural language query interface (Phase 2)
     sos/            ← SOS emergency feature (Phase 2)
@@ -594,6 +595,8 @@ If the system design does not require a feature in the current phase, do not imp
 | AI insight generation | `InsightsService` | Document upload, search |
 | Expense parsing | `ExpensesService` | OCR raw text, prescription logic |
 | Premium gating | `PremiumGuard` | Feature implementation code |
+| Vaccination schedule | `VaccinationsService` | Document upload, notification dispatch |
+| Vaccination reminders | `ReminderSchedulerService` (cron) | Patient data access, document logic |
 
 ---
 
@@ -997,6 +1000,9 @@ Lowercase, underscore-separated. Core tables:
 | `family_medical_proxies` | Proxy access grants |
 | `family_members` | Family account links (managed + linked dependents) |
 | `audit_logs` | Immutable append-only access log |
+| `vaccination_schedule` | Seeded GOI UIP master schedule (versioned lookup) |
+| `child_vaccinations` | Per-child vaccination records (one row per vaccine per child) |
+| `vaccination_reminder_logs` | Immutable append-only reminder dispatch log |
 | `illness_episodes` | Patient-created illness episode containers |
 | `medical_expenses` | Parsed receipt financial data |
 | `health_metrics` | Extracted lab values for AI Insights |
@@ -1076,7 +1082,7 @@ Undocumented violations will be rejected in code review.
 - Do not generate UUIDs in the database (no `gen_random_uuid()`) — generate in TypeScript with the `uuid` library in the base entity `@BeforeInsert()` hook.
 - Do not expose internal database IDs (auto-increment or otherwise) in API responses — UUID only.
 - Do not implement the premium check in a service method — use `PremiumGuard` via the `@Premium()` decorator.
-- Do not update or delete rows in `audit_logs` or `nl_queries` — these tables are INSERT-only.
+- Do not update or delete rows in `audit_logs`, `nl_queries`, or `vaccination_reminder_logs` — these tables are INSERT-only.
 - Do not publish an AI insight that has not passed `InsightSchema` validation — invalid insights are discarded silently.
 - Do not surface a `LOW` risk AI insight to any user — low risk signals are logged internally only.
 - Do not return a "pre-signed" URL that exposes the raw S3 key or bucket name — use the `StorageProvider` which generates time-limited CloudFront-signed or S3-signed URLs only.
@@ -1174,6 +1180,10 @@ CONFIDENCE_GATE_THRESHOLD=0.80       # AI Insights: minimum OCR confidence for l
 INSIGHTS_ENABLED=false               # Toggle AI Health Insights (Phase 1B)
 NL_QUERY_ENABLED=false               # Toggle Natural Language Query (Phase 2)
 SOS_ENABLED=false                    # Toggle SOS feature (Phase 2)
+
+# Vaccination Tracker
+VACCINATION_REMINDER_CRON=0 2 * * *  # 08:00 IST = 02:30 UTC; daily
+VACCINATION_SCHEDULE_VERSION=UIP_2023 # Active GOI schedule version seeded at deploy
 ```
 
 ---
@@ -1184,7 +1194,7 @@ SOS_ENABLED=false                    # Toggle SOS feature (Phase 2)
 
 | Phase | Months | Focus | Milestone |
 |-------|--------|-------|-----------|
-| **1A** | 1–6 | Core product: auth, patient upload, OCR, search, consent, doctor view, digital Rx, hospital admin, CRM widget, financial tracking (Premium) | **Core value loop live: patient stores → doctor views → doctor prescribes** |
+| **1A** | 1–6 | Core product: auth, patient upload, OCR, search, consent, doctor view, digital Rx, hospital admin, CRM widget, financial tracking (Premium), **vaccination tracker (Free)** | **Core value loop live: patient stores → doctor views → doctor prescribes** |
 | **1B** | 5–8 | AI Health Insights: lab value extraction, risk assessment engine, medical knowledge base (RAG), insight delivery | **AI Insights live (post regulatory review)** |
 | **2** | 9–18 | iOS, 9 regional languages, ABHA integration, NL query, family accounts, medical proxy, SOS emergency, lab direct upload, Stripe billing, service extraction begins | **Ecosystem expansion** |
 | **3** | 18+ | Pharmacy integration, full microservices, AI drug interaction warnings, telemedicine, general wellness tips, monthly health intelligence journal | **Platform completion** |
@@ -1230,7 +1240,7 @@ CODEX will review your output once you are done. All code must pass the review c
 
 ---
 
-*Constitution version: 1.0 | Date: 2026-06-01 | Aligned with SYSTEM_DESIGN_OmniMedVault.md v2.0*
+*Constitution version: 1.1 | Date: 2026-06-08 | Aligned with SYSTEM_DESIGN_OmniMedVault.md v2.1 | Change: Added Vaccination Tracker module (Phase 1A) — new tables: vaccination_schedule, child_vaccinations, vaccination_reminder_logs; new module: vaccinations/; vaccination_reminder_logs added to INSERT-only immutability rule*
 
 ---
 
