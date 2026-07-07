@@ -1,6 +1,6 @@
 # OmniMedVault — Engineering Specifications
 
-**Version:** 1.1 | **Date:** 2026-06-08 | **Status:** Phase 1A Active — Vaccination Tracker module added
+**Version:** 1.2 | **Date:** 2026-07-07 | **Status:** Phase 1 Active — Provider Ratings module added
 
 > This document is the authoritative engineering spec for implementation. It translates `SYSTEM_DESIGN_OmniMedVault.md` and `OMNIMEDVAULT_CONSTITUTION.md` into precise, implementable contracts for every module. A developer picking up any spec here should be able to implement it without referring back to the design doc for clarification.
 >
@@ -25,6 +25,7 @@
 - [S12 — Emergency QR Code](#s12--emergency-qr-code)
 - [S13 — Financial Tracking & Illness Episodes (Premium)](#s13--financial-tracking--illness-episodes-premium)
 - [S19 — Vaccination Tracker](#s19--vaccination-tracker)
+- [S20 — Provider Ratings](#s20--provider-ratings)
 
 **Phase 1B — AI Health Insights (Months 5–8)**
 - [S14 — AI Health Insights Engine](#s14--ai-health-insights-engine)
@@ -2400,6 +2401,407 @@ INDEX idx_vax_reminder_log_vaccination_id ON vaccination_reminder_logs(child_vac
 
 ---
 
+## S20 — Provider Ratings
+
+**Module:** `src/modules/ratings/`
+**Functional Requirements:** FR60–FR69
+**Phase:** 1 (alongside core Phase 1A)
+**Priority:** P1 — Free for all patients
+
+### Overview
+
+Patients rate doctors, hospitals, and individual clinics they have actually visited, with every rating anchored to a real document in their OmniMedVault record (visit verification). External ratings are aggregated from Google Places and Practo and cached. A weighted composite score (70% OmniMedVault in-app / 30% external) is computed and displayed per provider, along with automatically assigned trust badges.
+
+---
+
+### Business Rules
+
+| Rule | Detail |
+|------|--------|
+| BR-RAT01 | A patient can only submit a rating if at least one `documents` row exists for them where `doctor_name` or `institution_id` matches the target provider — this is the visit verification gate |
+| BR-RAT02 | One rating per `(patient_id, evidence_document_id)` pair — a patient may rate the same provider multiple times if they have multiple visit documents, but each rating must reference a distinct document |
+| BR-RAT03 | `overall_score` is required (1–5, step 0.5); individual dimension scores are optional |
+| BR-RAT04 | Rating is editable for 30 days after submission; after `edit_locked_at` the PATCH endpoint returns 403 |
+| BR-RAT05 | Accounts < 7 days old cannot submit ratings; returns `HTTP 403 / errorCode 1012` |
+| BR-RAT06 | Free-text `reviewText` passes content moderation (Claude API, single-call classification) before storage; rejected reviews return `HTTP 422 / errorCode 1013` |
+| BR-RAT07 | Ratings are anonymous by default (`isAnonymous = true`); patient may set `isAnonymous = false` on submission or edit |
+| BR-RAT08 | Composite score = `(omvAvg × 0.70) + (externalAvg × 0.30)`. Weights are configurable via environment variable without code deployment |
+| BR-RAT09 | Minimum threshold to display composite: ≥ 3 OmniMedVault ratings AND ≥ 5 external reviews; below threshold show each source separately with a clear label |
+| BR-RAT10 | External ratings are always served from Redis cache; a cache miss triggers a background SQS job — the API returns empty external data immediately and updates the client via a Kafka `ratings.external.refreshed` event when the fetch completes |
+| BR-RAT11 | External cache TTL: 24 hours for doctors/clinics; 7 days for hospitals |
+| BR-RAT12 | Spike detection: if a provider receives > 5 in-app ratings in < 1 hour, subsequent ratings are quarantined (`is_flagged = true`) and excluded from aggregate until manually reviewed by PLATFORM_ADMIN |
+| BR-RAT13 | Composite score and badges are recomputed asynchronously after each new rating is confirmed (not inline with the POST response) |
+| BR-RAT14 | `PremiumGuard` is NOT applied to any ratings endpoint — this is a free feature |
+
+---
+
+### API Contracts
+
+---
+
+#### `GET /api/v1/providers/search`
+
+Search for doctors, hospitals, and clinics by name, type, or city.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`
+
+**Query Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `q` | string | Name search (partial match; required if no other filter) |
+| `type` | string | `DOCTOR \| HOSPITAL \| CLINIC` |
+| `city` | string | City filter |
+| `page` | integer | Default 1 |
+| `pageSize` | integer | Default 20, max 50 |
+
+**Response `200 OK`:**
+```typescript
+{
+  data: Array<{
+    id: string;
+    name: string;
+    type: 'DOCTOR' | 'HOSPITAL' | 'CLINIC';
+    city: string | null;
+    state: string | null;
+    compositeScore: number | null;       // null if below threshold
+    compositeLabel: string | null;       // "OmniMedVault + External" | "OmniMedVault only" | "External only"
+    omvRatingCount: number;
+    badges: string[];                    // ["Highly Rated"] | ["Community Favourite"] | []
+    specialty: string | null;            // doctor's specialty display name; null for hospital/clinic
+  }>;
+  pagination: { page, pageSize, total, totalPages };
+}
+```
+
+---
+
+#### `GET /api/v1/providers/:providerId`
+
+Full provider detail with complete rating breakdown.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`
+
+**Response `200 OK`:**
+```typescript
+{
+  id: string;
+  name: string;
+  type: 'DOCTOR' | 'HOSPITAL' | 'CLINIC';
+  city: string | null;
+  state: string | null;
+  specialty: string | null;
+  compositeScore: number | null;
+  compositeBreakdown: {
+    omvAvg: number | null;
+    omvRatingCount: number;
+    externalSources: Array<{
+      source: 'GOOGLE' | 'PRACTO';
+      avgRating: number | null;
+      reviewCount: number | null;
+      fetchedAt: string | null;
+    }>;
+    weight: { omv: 0.70, external: 0.30 };
+  };
+  dimensionAverages: Record<string, number>;  // e.g. { expertise: 4.2, communication: 3.8, wait_time: 3.5 }
+  badges: string[];
+  totalRatings: number;
+  patientHasVisitDocument: boolean;   // true if authenticated patient has a qualifying document
+  patientExistingRatingId: string | null;  // if patient already rated, their rating ID
+}
+```
+
+---
+
+#### `POST /api/v1/ratings`
+
+Patient submits a rating for a provider.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT'])`
+
+**Request Body:**
+```typescript
+{
+  providerId: string;              // UUID
+  evidenceDocumentId: string;      // UUID; must be a document belonging to the authenticated patient
+  overallScore: number;            // 1.0 – 5.0, increments of 0.5
+  dimensionScores?: {
+    // For DOCTOR providers:
+    expertise?: number;
+    communication?: number;
+    wait_time?: number;
+    // For HOSPITAL providers:
+    infrastructure?: number;
+    cleanliness?: number;
+    staff_behaviour?: number;
+    // For CLINIC providers:
+    value_for_money?: number;
+    // wait_time and cleanliness and staff_behaviour also apply to CLINIC
+  };
+  reviewText?: string;             // max 300 chars; optional
+  isAnonymous?: boolean;           // default true
+}
+```
+
+**Response `201 Created`:**
+```typescript
+{
+  id: string;
+  providerId: string;
+  providerName: string;
+  overallScore: number;
+  submittedAt: string;
+  editLockedAt: string;            // submittedAt + 30 days
+  isAnonymous: boolean;
+}
+```
+
+**Error Scenarios:**
+
+| Condition | errorCode | HTTP |
+|-----------|-----------|------|
+| `evidenceDocumentId` not owned by patient | 1003 | 404 |
+| Document does not match the provider | 1005 | 400 |
+| Rating already exists for this `(patient, document)` pair | 1004 | 409 |
+| Account age < 7 days | 1012 | 403 |
+| `reviewText` fails content moderation | 1013 | 422 |
+| `overallScore` out of range or invalid step | 1005 | 400 |
+
+---
+
+#### `GET /api/v1/ratings/me`
+
+Patient lists all their own submitted ratings.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT'])`
+
+**Query Parameters:** `page`, `pageSize`, `type` (provider type filter)
+
+**Response `200 OK`:**
+```typescript
+{
+  data: Array<{
+    id: string;
+    providerId: string;
+    providerName: string;
+    providerType: string;
+    overallScore: number;
+    dimensionScores: Record<string, number>;
+    reviewText: string | null;
+    isAnonymous: boolean;
+    submittedAt: string;
+    editLockedAt: string;
+    isEditable: boolean;        // true if NOW() < editLockedAt
+  }>;
+  pagination: { page, pageSize, total, totalPages };
+}
+```
+
+---
+
+#### `PATCH /api/v1/ratings/:ratingId`
+
+Patient edits an existing rating within the 30-day edit window.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`, `RolesGuard(['PATIENT'])`
+
+**Request Body:**
+```typescript
+{
+  overallScore?: number;
+  dimensionScores?: Record<string, number>;
+  reviewText?: string;           // max 300 chars; re-moderated on update
+  isAnonymous?: boolean;
+}
+```
+
+**Response `200 OK`:** Updated rating (same shape as POST response)
+
+**Error Scenarios:**
+
+| Condition | errorCode | HTTP |
+|-----------|-----------|------|
+| Rating not found or not owned by patient | 1003 | 404 |
+| Edit window expired (`NOW() > editLockedAt`) | 1014 | 403 |
+| Updated `reviewText` fails content moderation | 1013 | 422 |
+
+---
+
+#### `GET /api/v1/providers/:providerId/ratings`
+
+Public list of in-app ratings for a provider.
+
+**Auth:** Bearer JWT
+**Guards:** `JwtAuthGuard`
+
+**Query Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `page` | integer | Default 1 |
+| `pageSize` | integer | Default 20, max 50 |
+| `sortBy` | string | `date \| score` (default `date`) |
+| `sortOrder` | string | `asc \| desc` (default `desc`) |
+
+**Response `200 OK`:**
+```typescript
+{
+  data: Array<{
+    id: string;
+    overallScore: number;
+    dimensionScores: Record<string, number>;
+    reviewText: string | null;
+    reviewerName: string | null;    // null if isAnonymous = true; "Verified Patient" placeholder
+    submittedAt: string;
+  }>;
+  pagination: { page, pageSize, total, totalPages };
+  summary: {
+    avgOverall: number | null;
+    totalRatings: number;
+    dimensionAverages: Record<string, number>;
+    ratingDistribution: { '1': N, '2': N, '3': N, '4': N, '5': N };
+  };
+}
+```
+
+> Note: `is_flagged = true` ratings are excluded from this response and from all aggregates.
+
+---
+
+### Background Jobs
+
+#### Composite Score Recalculator
+**Trigger:** Kafka event `rating.submitted` or `rating.external.refreshed`
+**Worker:** `src/modules/ratings/workers/composite-recalculator.worker.ts`
+
+```
+Event received: { providerId }
+        │
+Fetch all non-flagged provider_ratings for providerId
+  → compute omvAvg = average(overall_score)
+  → compute omvRatingCount
+        │
+Fetch external_ratings_snapshots for providerId (all sources)
+  → compute externalAvg = weighted average across available sources
+        │
+Compute composite:
+  if omvRatingCount >= 3 AND externalReviewCount >= 5:
+    composite = (omvAvg * 0.70) + (externalAvg * 0.30)
+  elif omvRatingCount >= 3:
+    composite = omvAvg  (label: "OmniMedVault only")
+  elif externalReviewCount >= 5:
+    composite = externalAvg  (label: "External only")
+  else:
+    composite = null
+        │
+Recompute badges:
+  if composite >= 4.5 → badges = ['Highly Rated']
+  if omvAvg >= 4.3 AND omvRatingCount >= 30 → badges += ['Community Favourite']
+  if composite <= 2.5 AND total_reviews >= 10 → badges = ['Avoid']
+        │
+UPDATE providers SET
+  omv_avg_overall = omvAvg,
+  omv_rating_count = omvRatingCount,
+  composite_score = composite,
+  composite_updated_at = NOW()
+  -- badges stored as JSONB or TEXT[]
+```
+
+#### External Rating Fetcher
+**Trigger:** SQS message on cache miss (Redis TTL expired or first view)
+**Worker:** `src/modules/ratings/workers/external-fetch.worker.ts`
+
+```
+SQS message: { providerId, sources: ['GOOGLE', 'PRACTO'] }
+        │
+For each source in parallel:
+  GOOGLE → Google Places API: GET /details with fields=rating,user_ratings_total
+  PRACTO → Practo partner API (or structured public data fallback)
+        │
+For each source result:
+  UPSERT into external_ratings_snapshots
+  SET in Redis: ext_rating:{source}:{google_place_id} → JSON, TTL per BR-RAT11
+        │
+Publish Kafka: ratings.external.refreshed → { providerId }
+  → triggers composite recalculator
+```
+
+---
+
+### OpenSearch Index
+
+**Index: `omnimedvault_providers`**
+```json
+{
+  "mappings": {
+    "properties": {
+      "providerId":      { "type": "keyword" },
+      "name":            { "type": "text", "analyzer": "standard" },
+      "type":            { "type": "keyword" },
+      "city":            { "type": "keyword" },
+      "state":           { "type": "keyword" },
+      "specialty":       { "type": "text" },
+      "compositeScore":  { "type": "float" },
+      "omvRatingCount":  { "type": "integer" },
+      "badges":          { "type": "keyword" }
+    }
+  }
+}
+```
+
+Indexed on provider creation and updated after each composite recalculation.
+
+---
+
+### Notification Events (added to S10 Appendix B)
+
+| Event | Payload | Listeners |
+|-------|---------|-----------|
+| `rating.submitted` | `{ ratingId, providerId, patientId }` | Notification (confirmation push), composite recalculator |
+| `ratings.external.refreshed` | `{ providerId }` | Composite recalculator |
+
+---
+
+### Database Migration Order Addition
+
+Append to Appendix C migration order:
+
+```
+23. `{ts}__create_providers.ts`                        ← Phase 1
+24. `{ts}__create_provider_external_ids.ts`            ← Phase 1
+25. `{ts}__create_provider_ratings.ts`                 ← Phase 1
+26. `{ts}__create_external_ratings_snapshots.ts`       ← Phase 1
+```
+
+---
+
+### Acceptance Criteria
+
+- [ ] `POST /api/v1/ratings` with an `evidenceDocumentId` not owned by the authenticated patient returns 404
+- [ ] `POST /api/v1/ratings` with a document that does not match the target provider returns 400
+- [ ] Duplicate rating for the same `(patient, document)` pair returns 409
+- [ ] Account < 7 days old attempting to rate returns 403 / errorCode 1012
+- [ ] Review text containing abusive content (verified via moderation call) returns 422 / errorCode 1013
+- [ ] `PATCH` on a rating after `edit_locked_at` returns 403 / errorCode 1014
+- [ ] `GET /api/v1/providers/:id/ratings` excludes flagged ratings (`is_flagged = true`)
+- [ ] Anonymous reviews show `reviewerName = null`; non-anonymous show patient name
+- [ ] Composite score computed correctly: omvAvg 4.0 + externalAvg 3.5 → 4.0*0.70 + 3.5*0.30 = 2.80 + 1.05 = 3.85
+- [ ] Below-threshold case: < 3 OmniMedVault ratings → composite is null; each source shown separately
+- [ ] External fetch is non-blocking: `GET /api/v1/providers/:id` returns immediately with cached data (or empty external section); never waits on live external API
+- [ ] Spike detection: 6th rating for same provider within 1 hour → `is_flagged = true`; excluded from aggregate
+- [ ] Composite and badges update asynchronously after rating submission (not inline)
+- [ ] No `PremiumGuard` on any ratings endpoint — free-tier patient accesses all endpoints successfully
+- [ ] OpenSearch provider index updated after composite recalculation; search results reflect new score
+
+---
+
+---
+
 ## S14 — AI Health Insights Engine
 
 **Phase:** 1B (Months 5–8) | **Module:** `src/modules/insights/`  
@@ -2622,6 +3024,8 @@ All domain events emitted via NestJS `EventEmitter2`. Event listeners are in `sr
 | `vaccination.due_today` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log, status updater |
 | `vaccination.overdue` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log, status updater |
 | `vaccination.overdue_weekly` | `{ childVaccinationId, patientId, guardianPatientId }` | Notification, reminder log |
+| `rating.submitted` | `{ ratingId, providerId, patientId }` | Notification (confirmation), composite recalculator worker |
+| `ratings.external.refreshed` | `{ providerId }` | Composite recalculator worker |
 
 ---
 
@@ -2651,6 +3055,10 @@ Migrations must be applied in this order (each depends on the previous):
 20. `{ts}__create_family_medical_proxies.ts`  ← Phase 2
 21. `{ts}__create_family_members.ts`  ← Phase 2
 22. `{ts}__create_sos_events.ts`  ← Phase 2
+23. `{ts}__create_providers.ts`  ← Phase 1
+24. `{ts}__create_provider_external_ids.ts`  ← Phase 1
+25. `{ts}__create_provider_ratings.ts`  ← Phase 1
+26. `{ts}__create_external_ratings_snapshots.ts`  ← Phase 1
 
 ---
 
@@ -2683,6 +3091,7 @@ Before Phase 1A is considered complete:
 - [ ] S12 Emergency QR — QR generation; public profile URL
 - [ ] S13 Financial Tracking — receipt parser; episodes; expense summary; PDF report (Premium)
 - [ ] S19 Vaccination Tracker — schedule generation; mark administered; reminders; PDF card (Free)
+- [ ] S20 Provider Ratings — submit/edit ratings; composite score; external cache; badges; provider search (Free)
 
 **Compliance & Security**
 - [ ] Column-level PHI encryption verified in production DB snapshot
@@ -2698,7 +3107,7 @@ Before Phase 1A is considered complete:
 
 ---
 
-*Specs version: 1.1 | Date: 2026-06-08 | Aligned with SYSTEM_DESIGN_OmniMedVault.md v2.1 and OMNIMEDVAULT_CONSTITUTION.md v1.0*
+*Specs version: 1.2 | Date: 2026-07-07 | Aligned with SYSTEM_DESIGN_OmniMedVault.md v2.2 and OMNIMEDVAULT_CONSTITUTION.md v1.0*
 
 ---
 

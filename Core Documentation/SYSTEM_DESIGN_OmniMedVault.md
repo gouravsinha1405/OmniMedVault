@@ -3,7 +3,7 @@
 ---
 
 # OmniMedVault — System Design Document
-**Version:** 2.1 | **Date:** 2026-06-08 | **Status:** Vaccination Tracker module added (Phase 1A)
+**Version:** 2.2 | **Date:** 2026-07-07 | **Status:** Provider Ratings module added (Phase 1)
 
 ---
 
@@ -37,6 +37,7 @@
 27. [Natural Language Query Interface](#27-natural-language-query-interface)
 28. [Future Scope](#28-future-scope)
 29. [Vaccination Tracker Module](#29-vaccination-tracker-module) ← **New — Phase 1A**
+30. [Provider Ratings Module](#30-provider-ratings-module) ← **New — Phase 1**
 
 ---
 
@@ -63,6 +64,8 @@ In India, most citizens lack a fixed family doctor. Medical records are fragment
 - Receive medication reminders
 - Register children as managed dependents and track their vaccination schedule
 - Receive timely reminders before upcoming vaccinations are due
+- Rate doctors, hospitals, and clinics they have visited
+- View consolidated provider ratings (OmniMedVault + external sources)
 
 ### Actor 2: Doctor
 - Register with verified credentials (NMC ID)
@@ -172,6 +175,18 @@ In India, most citizens lack a fixed family doctor. Medical records are fragment
 - FR58: Support for additional/optional vaccinations beyond the mandatory GOI schedule (e.g., Varicella, Hepatitis A, HPV, Influenza, Meningococcal) — parent can add these manually
 - FR59: Vaccination history is visible to any doctor who has active consent from the parent's account, in the same child's record view (no separate consent needed if the doctor already has access to the child's medical profile)
 
+### Patient-Facing — Provider Ratings (Free, Phase 1)
+- FR60: A patient can rate a **doctor**, **hospital**, or **individual clinic** after any verified visit (a document — prescription, lab report, or receipt — from that provider must exist in their record)
+- FR61: OmniMedVault in-app rating dimensions — **Doctor:** Expertise, Communication, Wait Time, Overall; **Hospital/Clinic:** Infrastructure, Cleanliness, Staff Behaviour, Wait Time, Overall — each on a 1–5 star scale with optional free-text review (max 300 chars)
+- FR62: One rating per patient per provider per visit episode; editable within 30 days of submission; cannot re-rate the same visit after 30 days
+- FR63: External ratings are read from open/free third-party sources: Google Places API (all provider types) and Practo (doctors and clinics) — displayed as a supplementary signal alongside the OmniMedVault community rating; never written back
+- FR64: A **Composite Rating** is computed per provider as: `(OmniMedVault_avg × 0.70) + (ExternalAvg × 0.30)`; displayed on the provider's detail screen with source breakdown
+- FR65: External ratings are cached (Redis, 24-hour TTL for doctors/clinics, 7-day TTL for hospitals); the cache miss triggers a background fetch — the API never blocks the UI on a live external call
+- FR66: Minimum thresholds before composite is shown: ≥ 3 OmniMedVault ratings; ≥ 5 external reviews across all sources; below threshold, each available source is shown separately with a label
+- FR67: Badges auto-assigned to providers based on composite score and review count — `Highly Rated` (≥ 4.5), `Community Favourite` (OmniMedVault score ≥ 4.3, ≥ 30 in-app ratings), `Avoid` (composite ≤ 2.5 with ≥ 10 reviews)
+- FR68: Provider search within the app (find a doctor, hospital, or clinic) surfaces the composite rating and badges in search results
+- FR69: A doctor with active patient consent can view the ratings their institution or clinic has received, but cannot see individual patient reviewer identities (ratings are anonymous by default; reviewer name is only shown if the patient opts in)
+
 ### Patient & Doctor — Natural Language Query Interface (Premium, Phase 2)
 - FR40: A patient can type any question about their own medical history in plain everyday language — English or Hindi — and receive a direct, factual answer drawn exclusively from their actual records. Example: *"What was my haemoglobin in August 2021?"*
 - FR41: If an exact record exists for the requested time period, the system returns the precise value with the document date and source. Example response: *"Your haemoglobin was 13.3 g/dL as per the lab report dated August 5, 2021."*
@@ -225,6 +240,7 @@ In India, most citizens lack a fixed family doctor. Medical records are fragment
 | Languages/UI | English + Hindi |
 | **Financial Tracking (Premium)** | Receipt OCR financial parsing; illness episode grouping; expense summaries by episode + annual; PDF expense report export |
 | **Vaccination Tracker (Free)** | GOI schedule auto-generation from child DOB; vaccination record management; push + SMS reminders; PDF vaccination card export |
+| **Provider Ratings (Free)** | In-app ratings for doctors/hospitals/clinics; external ratings from Google Places + Practo; weighted composite score (70% OmniMedVault / 30% external); badges; provider search integration |
 
 **Not in Phase 1A:** AI Health Insights, iOS, remaining 9 languages, ABHA, lab direct upload, offline mode, pharmacy, automated billing, family accounts, SOS.
 
@@ -394,6 +410,7 @@ src/
     institutions/  ← will become CRM Integration Service
     nl-query/      ← will become Natural Language Query Service
     vaccinations/  ← will become Vaccination Tracker Service
+    ratings/       ← will become Provider Ratings Service
   shared/
     database/
     guards/
@@ -689,6 +706,14 @@ POST   /api/v1/query/patient/:patientId          → Doctor or proxy queries a p
 # CRM / INSTITUTION
 POST   /api/v1/institutions/register     → Register hospital/clinic
 GET    /api/v1/institutions/widget-config → Widget embed config + API key
+
+# PROVIDER RATINGS
+GET    /api/v1/providers/search?q=&type=&city=&page=             → Search doctors/hospitals/clinics; returns composite rating + badges
+GET    /api/v1/providers/:providerId                             → Provider detail with full rating breakdown (OmniMedVault + external + composite)
+POST   /api/v1/ratings                                           → Patient submits a rating for a provider (requires visit evidence)
+GET    /api/v1/ratings/me                                        → Patient lists their own submitted ratings
+PATCH  /api/v1/ratings/:ratingId                                 → Patient edits a rating (within 30-day window)
+GET    /api/v1/providers/:providerId/ratings                     → Public list of OmniMedVault ratings for a provider (paginated; reviewer identity anonymised by default)
 
 # VACCINATION TRACKER
 GET    /api/v1/vaccinations/schedule                              → Get GOI master schedule (lookup — all vaccines + age milestones)
@@ -3115,7 +3140,323 @@ src/
 
 ---
 
-*End of System Design Document v2.1*
+---
+
+---
+
+## 30. Provider Ratings Module
+
+> In India, choosing a doctor, hospital, or clinic is largely word-of-mouth — a cousin's recommendation, a WhatsApp group post, or a quick Google search. Ratings on consumer platforms exist (Practo, Google) but are unverified: anyone can rate, including people who never visited. OmniMedVault has a structural advantage: every rating is backed by a real document (prescription, lab report, or receipt) from that provider in the patient's own record. This module surfaces that verified, first-party community signal alongside aggregated external ratings — giving patients a trustworthy composite score for every provider they interact with.
+
+---
+
+### 30.1 Problem Statement (Specific)
+
+| Current-State Problem | Impact |
+|---|---|
+| Google and Practo ratings are unverified | Fake reviews inflate or deflate scores; patients cannot trust them |
+| No single source covers all provider types | Google covers most; Practo covers doctors/clinics; neither is complete or verified |
+| Patients have no structured way to rate providers within their health record system | Feedback is siloed from the medical context |
+| Doctors and hospitals have no mechanism to receive verified feedback from their actual patients | No actionable signal for quality improvement |
+
+---
+
+### 30.2 Provider Types Covered
+
+| Provider Type | In-App Rating Dimensions | External Sources |
+|---|---|---|
+| **Doctor** (individual) | Expertise, Communication, Wait Time, Overall | Google Places, Practo |
+| **Hospital** | Infrastructure, Cleanliness, Staff Behaviour, Wait Time, Overall | Google Places |
+| **Individual Clinic** | Cleanliness, Staff Behaviour, Wait Time, Value for Money, Overall | Google Places, Practo |
+
+All ratings are 1–5 stars per dimension. Overall is a single top-level score; dimension scores are optional. Free-text review: max 300 chars; optional.
+
+---
+
+### 30.3 Rating Eligibility — Visit Verification
+
+A patient can only rate a provider if at least one document (prescription, lab report, or receipt) from that provider exists in their OmniMedVault record. This is the structural anti-fake-review guarantee.
+
+```
+Patient taps "Rate this provider"
+        │
+System checks: does patient have ≥ 1 document where
+  doctor_name matches provider  OR
+  institution_id matches provider?
+        │
+  YES → Rating form shown; provider pre-filled from the document context
+  NO  → "You can only rate providers you have visited. Upload a document from this visit first."
+```
+
+Verification happens at the application layer against `documents` and `prescriptions` tables. No ML, no heuristics — just a simple JOIN.
+
+---
+
+### 30.4 Composite Score Calculation
+
+```
+CompositeScore = (OmniMedVaultAvg × 0.70) + (ExternalAvg × 0.30)
+
+OmniMedVaultAvg  = average of all in-app `overall` ratings for this provider
+                   (minimum 3 ratings before this component is used)
+
+ExternalAvg      = weighted average across available external sources:
+                     Google Places   → weight 0.60 of the external 30%
+                     Practo          → weight 0.40 of the external 30%
+                   (only sources with data for this provider type are included;
+                    weights normalised if a source has no data)
+
+If OmniMedVault component is below threshold (< 3 ratings):
+  CompositeScore = ExternalAvg only, clearly labelled "External ratings only"
+
+If External component is below threshold (< 5 reviews across all sources):
+  CompositeScore = OmniMedVaultAvg only, clearly labelled "OmniMedVault ratings only"
+
+If both are below threshold:
+  No composite; each available source shown separately with review count
+```
+
+**Why 70/30?** OmniMedVault ratings are verified (visit-backed, account-linked). External ratings include unverified reviews. The weight reflects relative trustworthiness, not volume. This is tunable via admin config — no code change needed.
+
+---
+
+### 30.5 External Ratings Aggregation
+
+| Source | Provider Types | API / Method | Cache TTL |
+|---|---|---|---|
+| Google Places API | Doctors, Hospitals, Clinics | Official Places API (place details endpoint) | 24 hours (doctors/clinics), 7 days (hospitals) |
+| Practo | Doctors, Clinics | Practo public data (partner API if available; structured web data as fallback) | 24 hours |
+
+**Entity ID Mapping:**
+- Google Place ID is the primary external key for all provider types.
+- Practo doctor/clinic IDs are mapped to Google Place IDs via a pre-built `provider_external_ids` table, populated when a provider is first registered or searched.
+- Mapping updated via a background sync job (nightly for active providers).
+
+**External fetch flow:**
+```
+Patient views a provider detail screen
+        │
+Ratings Service checks Redis:
+  cache key: ext_rating:{source}:{google_place_id}  →  HIT → return cached
+        │
+  MISS → background SQS job triggered (non-blocking for the API call)
+       → API returns cached-or-empty immediately
+       → SQS worker fetches from Google Places + Practo in parallel
+       → stores result in Redis (TTL per above) + snapshot in MongoDB
+       → Kafka event: ratings.external.refreshed → app receives push if score changed significantly
+```
+
+**Important:** The UI never waits for a live external API call. External data is always served from cache. First-time views show "External ratings loading…" until the background job completes (typically < 5 seconds).
+
+---
+
+### 30.6 Anti-Gaming Controls
+
+| Control | Detail |
+|---|---|
+| Visit verification | Rating blocked without a matching document (FR60) |
+| One rating per visit episode | Patient can rate a provider once per illness episode; re-rates require a new document from a new visit |
+| 30-day edit window | Rating editable for 30 days post-submission; after that it is locked |
+| New account gate | Accounts < 7 days old cannot submit ratings |
+| Spike detection | If a provider receives > 5 in-app ratings within 1 hour, new ratings are quarantined for review before being included in the aggregate |
+| Sentiment cross-check | If free-text review sentiment (Claude API moderation pass) contradicts the star rating significantly, the rating is flagged for moderation queue |
+| Anonymity by default | Reviewer identity is not shown publicly; patient can opt in to show their name |
+
+---
+
+### 30.7 Data Models
+
+```sql
+-- Provider registry (doctors, hospitals, clinics)
+providers
+  id                    VARCHAR(36)   PRIMARY KEY
+  type                  VARCHAR(20)   NOT NULL  -- DOCTOR | HOSPITAL | CLINIC
+  name                  VARCHAR(300)  NOT NULL
+  city                  VARCHAR(100)
+  state                 VARCHAR(100)
+  google_place_id       VARCHAR(200)            -- primary external key; nullable until mapped
+  practo_id             VARCHAR(200)            -- nullable
+  doctor_id             VARCHAR(36)   REFERENCES doctors(id)  -- null unless type = DOCTOR
+  institution_id        VARCHAR(36)   REFERENCES institutions(id)  -- null unless type = HOSPITAL|CLINIC
+  omv_avg_overall       DECIMAL(3,2)            -- rolling average of in-app overall ratings; updated async
+  omv_rating_count      INTEGER       NOT NULL DEFAULT 0
+  composite_score       DECIMAL(3,2)            -- recomputed after each rating or external refresh
+  composite_updated_at  TIMESTAMPTZ
+  is_active             BOOLEAN       NOT NULL DEFAULT TRUE
+  created_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  updated_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+
+INDEX idx_providers_type           ON providers(type)
+INDEX idx_providers_google_place   ON providers(google_place_id)
+INDEX idx_providers_doctor_id      ON providers(doctor_id)
+INDEX idx_providers_institution_id ON providers(institution_id)
+INDEX idx_providers_city_type      ON providers(city, type)
+
+-- Patient in-app ratings
+provider_ratings
+  id                    VARCHAR(36)   PRIMARY KEY
+  provider_id           VARCHAR(36)   NOT NULL  REFERENCES providers(id)
+  patient_id            VARCHAR(36)   NOT NULL  REFERENCES patients(id)
+  evidence_document_id  VARCHAR(36)   NOT NULL  REFERENCES documents(id)  -- visit verification anchor
+  overall_score         DECIMAL(3,2)  NOT NULL  -- 1.0 – 5.0
+  dimension_scores      JSONB         NOT NULL DEFAULT '{}'
+    -- Doctor:   { expertise, communication, wait_time }
+    -- Hospital: { infrastructure, cleanliness, staff_behaviour, wait_time }
+    -- Clinic:   { cleanliness, staff_behaviour, wait_time, value_for_money }
+  review_text           VARCHAR(300)            -- optional; passes content moderation before storage
+  is_anonymous          BOOLEAN       NOT NULL DEFAULT TRUE
+  is_flagged            BOOLEAN       NOT NULL DEFAULT FALSE  -- set by spike detection or moderation
+  edit_locked_at        TIMESTAMPTZ             -- set to submitted_at + 30 days; null until then
+  submitted_at          TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+  updated_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+
+UNIQUE CONSTRAINT uq_rating_patient_document ON provider_ratings(patient_id, evidence_document_id)
+  -- one rating per visit document (not per provider — a patient can rate multiple visits)
+INDEX idx_ratings_provider_id      ON provider_ratings(provider_id)
+INDEX idx_ratings_patient_id       ON provider_ratings(patient_id)
+INDEX idx_ratings_provider_score   ON provider_ratings(provider_id, overall_score)
+
+-- External ratings cache snapshot (also stored in Redis for fast reads)
+external_ratings_snapshots
+  id                    VARCHAR(36)   PRIMARY KEY
+  provider_id           VARCHAR(36)   NOT NULL  REFERENCES providers(id)
+  source                VARCHAR(20)   NOT NULL  -- GOOGLE | PRACTO
+  external_id           VARCHAR(200)  NOT NULL  -- source-specific ID (google_place_id, practo_id)
+  avg_rating            DECIMAL(3,2)
+  review_count          INTEGER
+  raw_payload           JSONB                   -- full API response snapshot
+  fetched_at            TIMESTAMPTZ   NOT NULL
+  expires_at            TIMESTAMPTZ   NOT NULL
+
+UNIQUE CONSTRAINT uq_ext_rating ON external_ratings_snapshots(provider_id, source)
+INDEX idx_ext_ratings_provider     ON external_ratings_snapshots(provider_id)
+INDEX idx_ext_ratings_expiry       ON external_ratings_snapshots(expires_at)
+
+-- ID mapping table (Google Place ID ↔ Practo ID)
+provider_external_ids
+  provider_id           VARCHAR(36)   NOT NULL  REFERENCES providers(id)
+  source                VARCHAR(20)   NOT NULL
+  external_id           VARCHAR(200)  NOT NULL
+  verified              BOOLEAN       NOT NULL DEFAULT FALSE
+  mapped_at             TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+
+PRIMARY KEY (provider_id, source)
+```
+
+---
+
+### 30.8 API Design
+
+```
+# PROVIDER RATINGS (full contracts in S20)
+
+GET    /api/v1/providers/search
+  → ?q=&type=DOCTOR|HOSPITAL|CLINIC&city=&page=&pageSize=
+  → Returns paginated provider list with composite score + badges
+
+GET    /api/v1/providers/:providerId
+  → Full provider detail: name, type, OmniMedVault rating breakdown by dimension,
+    external ratings by source, composite score, badges, review count
+
+POST   /api/v1/ratings
+  → Patient submits a rating
+  → Requires: providerId, evidenceDocumentId, overallScore, dimensionScores?, reviewText?
+  → Validates visit evidence before accepting
+
+GET    /api/v1/ratings/me
+  → Patient lists all their own submitted ratings (paginated)
+
+PATCH  /api/v1/ratings/:ratingId
+  → Patient edits a rating (within 30-day edit window; returns 403 if locked)
+
+GET    /api/v1/providers/:providerId/ratings
+  → Public list of in-app ratings for a provider
+  → Reviewer name shown only when is_anonymous = false
+  → Excludes flagged ratings
+  → Paginated; sortable by date or score
+```
+
+---
+
+### 30.9 Rating Badges
+
+| Badge | Condition |
+|---|---|
+| `Highly Rated` | Composite score ≥ 4.5 with sufficient review count |
+| `Community Favourite` | OmniMedVault score ≥ 4.3 with ≥ 30 in-app ratings |
+| `Avoid` | Composite score ≤ 2.5 with ≥ 10 reviews |
+
+Badges are re-evaluated after every rating submission and external rating refresh. Stored on the `providers` row for fast search-result rendering (no join needed).
+
+---
+
+### 30.10 Notification Events
+
+| Event | Trigger | Recipient | Channel |
+|---|---|---|---|
+| `rating.submitted` | Patient submits a rating | Patient (confirmation) | In-app |
+| `rating.external_refreshed` | External rating changes by ≥ 0.3 stars | Internal monitoring | Log only (no patient notification) |
+
+No notification to rated providers in Phase 1 — provider-facing rating dashboard is Phase 2.
+
+---
+
+### 30.11 Integration with Existing Modules
+
+| Integration Point | Detail |
+|---|---|
+| **Document Module (S04)** | `evidence_document_id` on `provider_ratings` links to the visit document; validated at rating submission time |
+| **Doctor Module (S03)** | If the provider is a doctor registered on OmniMedVault, `providers.doctor_id` links to their `doctors` row; their ratings surface in search and their profile page |
+| **Institution Module (S11)** | If the provider is a hospital or clinic registered on OmniMedVault, `providers.institution_id` links to their `institutions` row |
+| **Notification Service (S10)** | Rating submission confirmation dispatched via existing notification pipeline |
+| **Search Module (S07)** | Provider search index includes composite score and badges for fast filtered retrieval |
+
+---
+
+### 30.12 Monolith Module Structure Addition
+
+```
+src/
+  modules/
+    ratings/               ← NEW — Phase 1
+      controllers/
+        ratings.controller.ts
+        providers.controller.ts
+      services/
+        ratings.service.ts
+        composite-score.service.ts     ← computes 70/30 weighted score
+        external-ratings.service.ts    ← fetches + caches Google + Practo data
+        provider-registry.service.ts   ← CRUD for providers table
+      repositories/
+        provider-ratings.repository.ts
+        providers.repository.ts
+        external-ratings-snapshots.repository.ts
+      workers/
+        external-fetch.worker.ts       ← SQS worker; fetches external ratings on cache miss
+        composite-recalculator.worker.ts  ← recomputes composite after each new rating
+      dto/
+        submit-rating.dto.ts
+        search-providers.dto.ts
+        update-rating.dto.ts
+```
+
+---
+
+### 30.13 Key Design Decisions & Rationale
+
+| Decision | Rationale |
+|---|---|
+| **Free feature** | Ratings are a trust and discovery feature for all patients. A verified rating system benefits the entire community; paywalling it would reduce contribution volume and defeat the purpose. |
+| **70% OmniMedVault / 30% External** | OmniMedVault ratings are visit-verified; external ratings are open to gaming. Higher internal weight reflects higher signal quality, not just quantity. |
+| **Google + Practo only (Phase 1)** | These two cover the majority of searchable providers in India. Additional sources (Justdial, 1mg, Lybrate) can be added in Phase 2 without schema changes. |
+| **Non-blocking external fetch** | Medical app users should not wait for a third-party API. Cache-first, background-refresh is the correct pattern. |
+| **Evidence document as anti-fake anchor** | No external ID verification, no OTP to the clinic — just proof the patient's own medical record contains a document from that provider. Simple, private, hard to fake at scale. |
+| **One rating per visit document** | Prevents rating the same visit twice. A patient with 5 visits to the same doctor can submit 5 separate ratings, each tied to a different document. This is correct — multiple interactions generate multiple data points. |
+| **30-day edit window** | Gives patients time to reconsider but prevents indefinite gaming where a patient holds their rating hostage. |
+
+---
+
+*End of System Design Document v2.2*
 
 ---
 
