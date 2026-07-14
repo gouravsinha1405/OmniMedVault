@@ -1,6 +1,4 @@
-import { AuthRole } from './auth.types';
-
-export type AuthenticatedUser = {
+export interface AuthenticatedUser {
   phone: string;
-  role: AuthRole;
-};
+  role: 'PATIENT' | 'DOCTOR' | 'ADMIN';
+}
