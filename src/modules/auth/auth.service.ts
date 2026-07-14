@@ -111,6 +111,15 @@ export class AuthService {
     return { accessToken, refreshToken: newRefresh, expiresIn: 900 };
   }
 
+  // Called after doctor registration to update role on subsequent token refresh (BR-A08)
+  upgradeRoleForPhone(phone: string, newRole: AuthenticatedUser['role']): void {
+    for (const record of this.refreshTokenStore.values()) {
+      if (record.phone === phone && !record.used) {
+        record.role = newRole;
+      }
+    }
+  }
+
   // Invalidates the refresh token; access tokens remain valid until expiry (BR-A06)
   logout(refreshToken: string): void {
     const record = this.refreshTokenStore.get(refreshToken);

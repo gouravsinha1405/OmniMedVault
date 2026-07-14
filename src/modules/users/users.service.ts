@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 
 import { UpdatePatientProfileDto } from './dto/update-patient-profile.dto';
@@ -6,6 +6,7 @@ import { PatientProfile } from './patient-profile.types';
 
 @Injectable()
 export class UsersService {
+  // ponytail: in-memory; replace with TypeORM + encrypted columns for prod
   private readonly patientProfiles = new Map<string, PatientProfile>();
 
   hasPatientProfile(phone: string): boolean {
@@ -16,12 +17,18 @@ export class UsersService {
     return this.ensurePatientProfile(phone);
   }
 
+  getPatientById(id: string): PatientProfile | undefined {
+    for (const profile of this.patientProfiles.values()) {
+      if (profile.id === id) return profile;
+    }
+    return undefined;
+  }
+
   getPatientProfileSummary(phone: string): Pick<
     PatientProfile,
     'id' | 'phone' | 'name' | 'bloodGroup' | 'allergies' | 'isActive'
   > {
     const profile = this.ensurePatientProfile(phone);
-
     return {
       id: profile.id,
       phone: profile.phone,
@@ -32,32 +39,34 @@ export class UsersService {
     };
   }
 
-  updatePatientProfile(
-    phone: string,
-    payload: UpdatePatientProfileDto,
-  ): PatientProfile {
-    const currentProfile = this.ensurePatientProfile(phone);
-    const nextProfile: PatientProfile = {
-      ...currentProfile,
-      name: payload.name ?? currentProfile.name,
-      dateOfBirth: payload.dateOfBirth ?? currentProfile.dateOfBirth,
-      gender: payload.gender ?? currentProfile.gender,
-      bloodGroup: payload.bloodGroup ?? currentProfile.bloodGroup,
-      abhaId: payload.abhaId ?? currentProfile.abhaId,
-      allergies: payload.allergies ?? currentProfile.allergies,
+  updatePatientProfile(phone: string, payload: UpdatePatientProfileDto): PatientProfile {
+    const current = this.ensurePatientProfile(phone);
+
+    // BR-S02: dateOfBirth must be in the past
+    if (payload.dateOfBirth && new Date(payload.dateOfBirth) >= new Date()) {
+      throw new BadRequestException({
+        errorResponse: { errorCode: 1005, description: 'dateOfBirth must be a past date' },
+      });
+    }
+
+    const next: PatientProfile = {
+      ...current,
+      name: payload.name ?? current.name,
+      dateOfBirth: payload.dateOfBirth ?? current.dateOfBirth,
+      gender: payload.gender ?? current.gender,
+      bloodGroup: payload.bloodGroup ?? current.bloodGroup,
+      abhaId: payload.abhaId ?? current.abhaId,
+      allergies: payload.allergies ?? current.allergies,
       updatedAt: new Date().toISOString(),
     };
 
-    this.patientProfiles.set(phone, nextProfile);
-    return nextProfile;
+    this.patientProfiles.set(phone, next);
+    return next;
   }
 
   private ensurePatientProfile(phone: string): PatientProfile {
-    const existingProfile = this.patientProfiles.get(phone);
-
-    if (existingProfile) {
-      return existingProfile;
-    }
+    const existing = this.patientProfiles.get(phone);
+    if (existing) return existing;
 
     const now = new Date().toISOString();
     const profile: PatientProfile = {
@@ -69,6 +78,7 @@ export class UsersService {
       bloodGroup: null,
       abhaId: null,
       allergies: [],
+      subscriptionTier: 'FREE', // BR-P04
       isActive: true,
       createdAt: now,
       updatedAt: now,

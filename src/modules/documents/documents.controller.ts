@@ -24,7 +24,8 @@ import { UploadDocumentDto } from './dto/upload-document.dto';
 import { DocumentRecord } from './document.types';
 import { DocumentsService } from './documents.service';
 
-@Controller('documents')
+// S02: timeline and documents share DocumentsService; co-locating avoids cross-module injection
+@Controller()
 @UseGuards(DemoAuthGuard, PatientRoleGuard)
 export class DocumentsController {
   constructor(
@@ -32,7 +33,23 @@ export class DocumentsController {
     private readonly auditService: AuditService,
   ) {}
 
-  @Post()
+  // S02 — GET /api/v1/patients/me/timeline
+  @Get('patients/me/timeline')
+  getTimeline(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListDocumentsQueryDto,
+  ) {
+    this.auditService.recordEvent({
+      actor: user,
+      action: 'VIEW',
+      resourceType: 'TIMELINE',
+      resourceId: user.sub,
+      patientPhone: user.phone,
+    });
+    return this.documentsService.listDocuments(user.phone, query);
+  }
+
+  @Post('documents')
   @UseInterceptors(FileInterceptor('file'))
   uploadDocument(
     @CurrentUser() user: AuthenticatedUser,
@@ -51,15 +68,13 @@ export class DocumentsController {
       resourceType: 'DOCUMENT',
       resourceId: document.id,
       patientPhone: user.phone,
-      details: {
-        type: document.type,
-      },
+      details: { type: document.type },
     });
 
     return document;
   }
 
-  @Get()
+  @Get('documents')
   listDocuments(
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListDocumentsQueryDto,
@@ -67,7 +82,7 @@ export class DocumentsController {
     return this.documentsService.listDocuments(user.phone, query);
   }
 
-  @Get(':id')
+  @Get('documents/:id')
   getDocument(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) documentId: string,
@@ -80,15 +95,13 @@ export class DocumentsController {
       resourceType: 'DOCUMENT',
       resourceId: document.id,
       patientPhone: user.phone,
-      details: {
-        mode: 'metadata',
-      },
+      details: { mode: 'metadata' },
     });
 
     return document;
   }
 
-  @Get(':id/download')
+  @Get('documents/:id/download')
   getDownloadUrl(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', new ParseUUIDPipe()) documentId: string,
@@ -97,13 +110,11 @@ export class DocumentsController {
 
     this.auditService.recordEvent({
       actor: user,
-      action: 'VIEW',
+      action: 'DOWNLOAD',
       resourceType: 'DOCUMENT',
       resourceId: download.documentId,
       patientPhone: user.phone,
-      details: {
-        mode: 'download-url',
-      },
+      details: { mode: 'download-url' },
     });
 
     return download;

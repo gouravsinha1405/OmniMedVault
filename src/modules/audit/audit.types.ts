@@ -2,15 +2,20 @@ import { AuthRole } from '../auth/auth.types';
 
 export type AuditAction =
   | 'VIEW'
+  | 'DOWNLOAD'
   | 'UPDATE'
   | 'UPLOAD'
+  | 'PRESCRIBE'
+  | 'QUERY'
   | 'CONSENT_GRANT'
   | 'CONSENT_REVOKE';
 
 export type AuditResourceType =
   | 'PROFILE'
   | 'DOCUMENT'
-  | 'CONSENT';
+  | 'CONSENT'
+  | 'PRESCRIPTION'
+  | 'TIMELINE';
 
 export type AuditLogRecord = {
   id: string;

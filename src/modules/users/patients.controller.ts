@@ -10,6 +10,14 @@ import { UpdatePatientProfileDto } from './dto/update-patient-profile.dto';
 import { PatientProfile } from './patient-profile.types';
 import { UsersService } from './users.service';
 
+type PatientProfileResponse = Omit<PatientProfile, 'phone' | 'isActive'>;
+
+function toResponse(p: PatientProfile): PatientProfileResponse {
+  // phone is the auth identity anchor — never returned in profile responses (S02)
+  const { phone: _phone, isActive: _isActive, ...rest } = p;
+  return rest;
+}
+
 @Controller('patients')
 @UseGuards(DemoAuthGuard, PatientRoleGuard)
 export class PatientsController {
@@ -19,7 +27,7 @@ export class PatientsController {
   ) {}
 
   @Get('me')
-  getMe(@CurrentUser() user: AuthenticatedUser): PatientProfile {
+  getMe(@CurrentUser() user: AuthenticatedUser): PatientProfileResponse {
     const profile = this.usersService.getPatientProfile(user.phone);
 
     this.auditService.recordEvent({
@@ -30,14 +38,14 @@ export class PatientsController {
       patientPhone: user.phone,
     });
 
-    return profile;
+    return toResponse(profile);
   }
 
   @Put('me')
   updateMe(
     @CurrentUser() user: AuthenticatedUser,
     @Body() payload: UpdatePatientProfileDto,
-  ): PatientProfile {
+  ): PatientProfileResponse {
     const profile = this.usersService.updatePatientProfile(user.phone, payload);
 
     this.auditService.recordEvent({
@@ -48,7 +56,7 @@ export class PatientsController {
       patientPhone: user.phone,
     });
 
-    return profile;
+    return toResponse(profile);
   }
 
   @Get('me/audit-log')
@@ -56,4 +64,3 @@ export class PatientsController {
     return this.auditService.listPatientAuditLogs(user.phone);
   }
 }
-
