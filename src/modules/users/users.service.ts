@@ -8,6 +8,10 @@ import { PatientProfile } from './patient-profile.types';
 export class UsersService {
   private readonly patientProfiles = new Map<string, PatientProfile>();
 
+  hasPatientProfile(phone: string): boolean {
+    return this.patientProfiles.has(phone);
+  }
+
   getPatientProfile(phone: string): PatientProfile {
     return this.ensurePatientProfile(phone);
   }

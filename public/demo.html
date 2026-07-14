@@ -565,31 +565,20 @@
       }
 
       async function requestOtp() {
-        const payload = {
-          phone: elements.phone.value.trim(),
-          role: elements.role.value,
-        };
-
+        const phone = elements.phone.value.trim();
         const result = await api('/auth/otp/request', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ phone }),
         });
-
-        setSession({
-          sessionId: result.sessionId,
-          role: result.role,
-          phone: payload.phone,
-        });
-        elements.otp.value = result.debugOtp || '';
-        setConsole('OTP requested', result);
+        // OTP is logged to server console in dev; check server output
+        setSession({ phone });
+        setConsole('OTP requested (check server console for the OTP code)', result);
       }
 
       async function verifyOtp() {
         const payload = {
-          sessionId: elements.sessionId.value.trim(),
           phone: elements.phone.value.trim(),
-          role: elements.role.value,
           otp: elements.otp.value.trim(),
         };
 
@@ -602,7 +591,7 @@
         setSession({
           accessToken: result.accessToken,
           role: result.user.role,
-          phone: result.user.phone,
+          phone: state.phone,
         });
         setConsole('OTP verified', result);
       }

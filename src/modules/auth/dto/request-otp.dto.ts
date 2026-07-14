@@ -1,13 +1,7 @@
-import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
-
-import { AUTH_ROLES } from '../auth.types';
+import { IsString, Matches } from 'class-validator';
 
 export class RequestOtpDto {
   @IsString()
-  @Matches(/^\+?[1-9]\d{9,14}$/)
+  @Matches(/^\+[1-9]\d{9,14}$/, { message: 'phone must be in E.164 format (e.g. +919876543210)' })
   phone!: string;
-
-  @IsOptional()
-  @IsIn(AUTH_ROLES)
-  role?: (typeof AUTH_ROLES)[number];
 }
